@@ -1,0 +1,105 @@
+/** Ollama provider (local models + ollama.com cloud models through the same API). */
+
+import { ModelProvider, CAPABILITY } from './provider.mjs';
+import { ModelError } from '../core/errors.mjs';
+
+export class OllamaProvider extends ModelProvider {
+  constructor(config = {}) {
+    super({
+      id: 'ollama',
+      label: 'Ollama',
+      model: config.model ?? 'qwen2.5-coder:7b',
+      capabilities: [CAPABILITY.CHAT, CAPABILITY.JSON, CAPABILITY.CODE, CAPABILITY.TOOLS],
+    });
+    this.host = String(config.host ?? 'http://127.0.0.1:11434').replace(/\/$/, '');
+    this.temperature = config.temperature ?? 0.35;
+    this.numCtx = config.numCtx ?? 16384;
+    this.timeoutMs = config.timeoutMs ?? 240000;
+    this.keepAlive = config.keepAlive ?? '30m';
+    this.available = undefined;
+  }
+
+  async health() {
+    try {
+      const response = await this.#fetch('/api/tags', { method: 'GET' }, 5000);
+      const data = await response.json();
+      const models = (data.models ?? []).map((model) => model.name);
+      this.available = models;
+      const hasModel = models.some((name) => name === this.model || name.startsWith(`${this.model}:`) || name.split(':')[0] === this.model.split(':')[0]);
+      return {
+        ok: hasModel,
+        provider: this.id,
+        model: this.model,
+        models,
+        hint: hasModel ? undefined : `model "${this.model}" not found. Run: ollama pull ${this.model}`,
+      };
+    } catch (error) {
+      this.available = [];
+      return { ok: false, provider: this.id, error: String(error?.message ?? error), hint: 'Is `ollama serve` running?' };
+    }
+  }
+
+  async #fetch(pathname, init, timeoutMs = this.timeoutMs) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      return await fetch(`${this.host}${pathname}`, { ...init, signal: controller.signal });
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  async generate({ messages, system, prompt, temperature, maxTokens, json, numCtx }) {
+    const chatMessages = [];
+    if (system) chatMessages.push({ role: 'system', content: system });
+    if (messages?.length) chatMessages.push(...messages);
+    if (prompt) chatMessages.push({ role: 'user', content: prompt });
+
+    const started = Date.now();
+    let response;
+    try {
+      response = await this.#fetch('/api/chat', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          model: this.model,
+          messages: chatMessages.map((message) => ({ role: message.role === 'system' ? 'system' : message.role, content: message.content })),
+          stream: false,
+          keep_alive: this.keepAlive,
+          format: json ? 'json' : undefined,
+          options: {
+            temperature: temperature ?? this.temperature,
+            num_ctx: numCtx ?? this.numCtx,
+            num_predict: maxTokens ?? 2048,
+          },
+        }),
+      });
+    } catch (error) {
+      this.recordFailure();
+      throw new ModelError(`ollama request failed: ${error?.message ?? error}`, { hint: 'Check `ollama serve` and the model name.' });
+    }
+
+    if (!response.ok) {
+      this.recordFailure();
+      const body = await response.text().catch(() => '');
+      throw new ModelError(`ollama responded ${response.status}: ${body.slice(0, 300)}`);
+    }
+
+    const data = await response.json();
+    const text = data?.message?.content ?? '';
+    this.recordSuccess({
+      promptTokens: data.prompt_eval_count ?? 0,
+      completionTokens: data.eval_count ?? 0,
+      ms: Date.now() - started,
+    });
+    return {
+      text,
+      provider: this.id,
+      model: this.model,
+      promptTokens: data.prompt_eval_count ?? 0,
+      completionTokens: data.eval_count ?? 0,
+      ms: Date.now() - started,
+      raw: data,
+    };
+  }
+}

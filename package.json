@@ -1,0 +1,31 @@
+{
+  "name": "artisan",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Artisan - an autonomous frontend design & engineering agent (inspect > understand > plan > build > verify > critique > improve)",
+  "type": "module",
+  "engines": {
+    "node": ">=20.10"
+  },
+  "bin": {
+    "artisan": "./bin/artisan.mjs"
+  },
+  "exports": {
+    ".": "./src/runtime/session.mjs"
+  },
+  "scripts": {
+    "artisan": "node ./bin/artisan.mjs",
+    "test": "node --test tests/unit/*.test.mjs",
+    "test:all": "node --test tests/unit/*.test.mjs tests/e2e/*.test.mjs",
+    "e2e": "node ./scripts/e2e.mjs",
+    "doctor": "node ./bin/artisan.mjs doctor",
+    "skills": "node ./bin/artisan.mjs skills list"
+  },
+  "keywords": [
+    "agent",
+    "frontend",
+    "design",
+    "autonomous"
+  ],
+  "license": "MIT"
+}

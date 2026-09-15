@@ -1,0 +1,130 @@
+{
+  "version": 1,
+  "createdAt": "2026-09-15T18:07:51.001Z",
+  "updatedAt": "2026-09-15T20:13:11.648Z",
+  "runs": [
+    {
+      "id": "run_a64cbb81",
+      "request": "--help",
+      "taskType": "create-page",
+      "at": "2026-09-15T18:07:51.000Z",
+      "status": "done",
+      "score": 80,
+      "skills": [
+        "anti-slop",
+        "frontend-master",
+        "layout",
+        "micro-interactions",
+        "typography",
+        "visual-design",
+        "responsive-design"
+      ],
+      "files": [
+        "index.html"
+      ],
+      "direction": "Editorial Serif"
+    },
+    {
+      "id": "run_9a087d0e",
+      "request": "Build the bottom section of this landing page.",
+      "taskType": "create-page",
+      "at": "2026-09-15T20:09:21.956Z",
+      "status": "done",
+      "score": 90,
+      "skills": [
+        "anti-slop",
+        "frontend-master",
+        "visual-design",
+        "layout",
+        "micro-interactions",
+        "typography",
+        "responsive-design"
+      ],
+      "files": [
+        "index.html"
+      ],
+      "direction": "Humanist Airy"
+    },
+    {
+      "id": "run_679e2cb7",
+      "request": "Build the bottom section of this landing page.",
+      "taskType": "create-page",
+      "at": "2026-09-15T20:13:11.648Z",
+      "status": "done",
+      "score": 90,
+      "skills": [
+        "anti-slop",
+        "frontend-master",
+        "visual-design",
+        "layout",
+        "micro-interactions",
+        "typography",
+        "responsive-design"
+      ],
+      "files": [
+        "index.html"
+      ],
+      "direction": "Humanist Airy"
+    }
+  ],
+  "designLanguage": {
+    "direction": "Humanist Airy",
+    "tokens": {
+      "accent": "#3b6df6",
+      "theme": "light",
+      "direction": "humanist-airy"
+    },
+    "updatedAt": "2026-09-15T20:13:11.648Z"
+  },
+  "decisions": [
+    {
+      "kind": "direction",
+      "choice": "editorial-serif",
+      "why": "model:ollama",
+      "runId": "run_a64cbb81"
+    },
+    {
+      "kind": "direction",
+      "choice": "humanist-airy",
+      "why": "heuristic",
+      "runId": "run_9a087d0e"
+    },
+    {
+      "kind": "direction",
+      "choice": "humanist-airy",
+      "why": "heuristic",
+      "runId": "run_679e2cb7"
+    }
+  ],
+  "registry": {
+    "created": [
+      "index.html"
+    ],
+    "modified": [
+      "index.html"
+    ]
+  },
+  "history": [
+    {
+      "id": "run_a64cbb81",
+      "request": "--help",
+      "at": "2026-09-15T18:07:51.000Z",
+      "status": "done",
+      "score": 80
+    },
+    {
+      "id": "run_9a087d0e",
+      "request": "Build the bottom section of this landing page.",
+      "at": "2026-09-15T20:09:21.956Z",
+      "status": "done",
+      "score": 90
+    },
+    {
+      "id": "run_679e2cb7",
+      "request": "Build the bottom section of this landing page.",
+      "at": "2026-09-15T20:13:11.648Z",
+      "status": "done",
+      "score": 90
+    }
+  ]
+}

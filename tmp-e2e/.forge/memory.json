@@ -1,0 +1,60 @@
+{
+  "version": 1,
+  "createdAt": "2026-09-15T17:51:52.117Z",
+  "updatedAt": "2026-09-15T17:51:52.117Z",
+  "runs": [
+    {
+      "id": "run_dcc73ded",
+      "request": "Build me a simple red button",
+      "taskType": "create-component",
+      "at": "2026-09-15T17:51:52.116Z",
+      "status": "needs-fix",
+      "score": 62,
+      "skills": [
+        "anti-slop",
+        "micro-interactions",
+        "visual-design",
+        "accessibility",
+        "component-composition",
+        "animation-principles",
+        "gsap"
+      ],
+      "files": [
+        "index.html"
+      ],
+      "direction": "Soft Product"
+    }
+  ],
+  "designLanguage": {
+    "direction": "Soft Product",
+    "tokens": {
+      "accent": "#3b6df6",
+      "theme": "light",
+      "direction": "soft-product"
+    },
+    "updatedAt": "2026-09-15T17:51:52.116Z"
+  },
+  "decisions": [
+    {
+      "kind": "direction",
+      "choice": "soft-product",
+      "why": "model:ollama",
+      "runId": "run_dcc73ded"
+    }
+  ],
+  "registry": {
+    "created": [
+      "index.html"
+    ],
+    "modified": []
+  },
+  "history": [
+    {
+      "id": "run_dcc73ded",
+      "request": "Build me a simple red button",
+      "at": "2026-09-15T17:51:52.116Z",
+      "status": "needs-fix",
+      "score": 62
+    }
+  ]
+}
