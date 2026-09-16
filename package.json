@@ -17,8 +17,10 @@
     "artisan": "node ./bin/artisan.mjs",
     "chat": "node ./bin/artisan.mjs chat",
     "test": "node --test tests/unit/*.test.mjs",
-    "test:all": "node --test tests/unit/*.test.mjs tests/e2e/*.test.mjs",
+    "test:agent": "node --test tests/agent/design-agent.test.mjs",
+    "test:all": "node --test tests/unit/*.test.mjs tests/agent/*.test.mjs tests/e2e/*.test.mjs",
     "e2e": "node ./scripts/e2e.mjs",
+    "serve": "node ./scripts/serve.mjs",
     "doctor": "node ./bin/artisan.mjs doctor",
     "skills": "node ./bin/artisan.mjs skills list"
   },

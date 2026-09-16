@@ -6,7 +6,7 @@ import { loadConfig } from '../core/config.mjs';
 import { createSession } from '../runtime/facade.mjs';
 
 // concise professional progress — matches spec output style
-const C = { reset: '\x1b[0m', dim: '\x1b[2m', cyan: '\x1b[36m', green: '\x1b[32m', yellow: '\x1b[33m', red: '\x1b[31m', bold: '\x1b[1m' };
+const C = { reset: '\x1b[0m', dim: '\x1b[2m', cyan: '\x1b[36m', green: '\x1b[32m', yellow: '\x1b[33m', red: '\x1b[31m', magenta: '\x1b[35m', bold: '\x1b[1m' };
 function paint(code, text, useColor) { return useColor ? `${code}${text}${C.reset}` : text; }
 
 function progressPrinter({ color }) {
@@ -15,6 +15,8 @@ function progressPrinter({ color }) {
       case 'understand': console.log(paint(C.dim, `[understand] ${ev.text}`, color)); break;
       case 'inspect': console.log(paint(C.dim, `[inspect] ${ev.text}`, color)); break;
       case 'skill': console.log(paint(C.cyan, `[skill] ${ev.text}`, color)); break;
+      case 'tool': console.log(paint(C.dim, `[tool] ${ev.text}`, color)); break;
+      case 'brain': console.log(paint(C.magenta, `[brain] ${ev.text}`, color)); break;
       case 'todo': {
         const t = String(ev.text);
         if (t.startsWith('✓')) console.log(paint(C.green, `[todo] ${t}`, color));
@@ -50,7 +52,7 @@ export async function runChat({ workspaceDir, config, flags = {} } = {}) {
     input: process.stdin,
     output: process.stdout,
     prompt: paint(C.cyan, 'Agent> ', color),
-    terminal: true,
+    terminal: Boolean(process.stdin.isTTY),
     historySize: 200,
   });
 
@@ -105,14 +107,13 @@ export async function runChat({ workspaceDir, config, flags = {} } = {}) {
 
     running = true;
     try {
-      const result = await executeTurn(raw, state, { onProgress });
+      const result = await executeTurn(raw, state, { onProgress, onToken: (text) => process.stdout.write(text) });
 
       if (result.kind === 'answer') {
-        console.log(result.text);
+        if (result.streamed) console.log();
+        else console.log(result.text);
       } else if (result.kind === 'discuss') {
         console.log(result.text);
-        // show hint that we are in discuss mode
-        console.log(paint(C.dim, `\n(discuss mode — say "Build it" to start implementation)`, color));
       } else if (result.kind === 'task') {
         // concise completion + TODO snapshot
         const todos = state.todoItems;
@@ -143,7 +144,7 @@ export async function runChat({ workspaceDir, config, flags = {} } = {}) {
       console.log(paint(C.red, `error: ${String(e?.message ?? e)}`, color));
     } finally {
       running = false;
-      rl.prompt();
+      if (!rl.closed) rl.prompt();
     }
   }
 

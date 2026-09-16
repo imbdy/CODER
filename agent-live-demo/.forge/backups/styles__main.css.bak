@@ -1,0 +1,229 @@
+:root {
+  --color-bg: #0b0a09;
+  --color-text: #f5f2ee;
+  --color-accent: #e06a2b;
+  --font-sans: "Inter", system-ui, sans-serif;
+  --font-display: "Fraunces", Georgia, serif;
+  --radius-md: 16px;
+  --space-2: 0.5rem;
+  --space-3: 0.75rem;
+  --space-4: 1rem;
+  --space-6: 1.5rem;
+  --space-8: 2rem;
+  --space-12: 3rem;
+  --space-16: 4rem;
+  --text-xs: 0.78rem;
+  --text-sm: 0.9rem;
+  --text-base: 1rem;
+  --text-lg: 1.25rem;
+  --text-xl: 1.6rem;
+  --text-display: clamp(2.2rem, 5vw + 1rem, 4.5rem);
+  --leading-tight: 1.05;
+  --leading-body: 1.6;
+  --tracking-tight: -0.02em;
+  --tracking-wide: 0.08em;
+  --color-surface: #141210;
+  --color-surface-alt: #1c1916;
+  --color-border: #2a2621;
+  --color-accent-hover: #f07c3c;
+  --color-on-accent: #1a0f06;
+  --shadow-sm: 0 1px 2px rgb(0 0 0 / 0.3);
+  --shadow-lg: 0 24px 60px -20px rgb(0 0 0 / 0.55);
+  --ease-out: cubic-bezier(0.22, 1, 0.36, 1);
+  --dur-fast: 140ms;
+  --dur-base: 240ms;
+  --dur-slow: 520ms;
+  --container: 72rem;
+  --gutter: clamp(1rem, 4vw, 2.5rem);
+}
+
+body {
+  font-family: var(--font-sans);
+  background-color: var(--color-bg);
+  color: var(--color-text);
+  margin: 0;
+  padding: 0;
+}
+
+.container {
+  max-width: var(--container);
+  margin: 0 auto;
+  padding: 0 var(--gutter);
+}
+
+.hero {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--space-12);
+  align-items: center;
+  min-height: 80vh;
+  background: linear-gradient(to bottom, var(--color-accent), var(--color-surface));
+  color: var(--color-text);
+  padding: var(--space-12);
+}
+
+.btn {
+  padding: 18px 32px;
+  font-size: var(--text-lg);
+  font-weight: 500;
+  color: var(--color-on-accent);
+  background-color: var(--color-accent);
+  border: none;
+  border-radius: var(--radius-md);
+  transition: transform 160ms ease, box-shadow 160ms ease;
+}
+
+.btn:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12);
+}
+
+.btn:active {
+  transform: scale(0.97);
+}
+
+.btn:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 3px;
+}
+
+.btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.features {
+  padding: var(--space-16);
+}
+
+.features .grid {
+  gap: var(--space-12);
+}
+
+.features .feature {
+  background: var(--color-surface);
+  padding: var(--space-12);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-sm);
+}
+
+.pricing {
+  padding: var(--space-16);
+}
+
+.pricing .grid {
+  gap: var(--space-12);
+}
+
+.pricing .pricing-card {
+  background: var(--color-surface);
+  padding: var(--space-12);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-sm);
+}
+
+.pricing .pricing-card-promoted {
+  background: var(--color-accent);
+  color: var(--color-on-accent);
+}
+
+.pricing .pricing-card-promoted h3 {
+  color: var(--color-on-accent);
+}
+
+.pricing .pricing-card ul {
+  list-style-type: none;
+  padding: 0;
+}
+
+.pricing .pricing-card li {
+  margin-bottom: var(--space-3);
+}
+
+.testimonials {
+  padding: var(--space-16);
+}
+
+.testimonials .grid {
+  gap: var(--space-12);
+}
+
+.testimonials .testimonial {
+  background: var(--color-surface);
+  padding: var(--space-12);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-sm);
+}
+
+.faq {
+  padding: var(--space-16);
+}
+
+.faq details {
+  margin-bottom: var(--space-6);
+}
+
+.faq summary {
+  font-size: var(--text-lg);
+  font-weight: 500;
+  color: var(--color-accent);
+}
+
+.faq summary:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 3px;
+}
+
+footer {
+  padding: var(--space-16);
+  background: var(--color-surface);
+  color: var(--color-text);
+  text-align: center;
+}
+
+footer form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+footer label {
+  font-size: var(--text-base);
+  font-weight: 500;
+}
+
+footer input {
+  padding: var(--space-3);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+}
+
+footer button {
+  padding: 18px 32px;
+  font-size: var(--text-lg);
+  font-weight: 500;
+  color: var(--color-on-accent);
+  background-color: var(--color-accent);
+  border: none;
+  border-radius: var(--radius-md);
+  transition: transform 160ms ease, box-shadow 160ms ease;
+}
+
+footer button:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12);
+}
+
+footer button:active {
+  transform: scale(0.97);
+}
+
+footer button:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 3px;
+}
+
+footer button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}

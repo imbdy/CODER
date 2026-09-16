@@ -11,6 +11,7 @@ import { extractJson, extractCodeBlock } from './json.mjs';
 import { OllamaProvider } from './ollama.mjs';
 import { OpenAICompatibleProvider } from './openai-compatible.mjs';
 import { DeterministicProvider } from './deterministic.mjs';
+import { normalizeProviderId } from '../core/config.mjs';
 import { EVENT } from '../core/events.mjs';
 import { ModelError } from '../core/errors.mjs';
 
@@ -26,14 +27,15 @@ export class ModelRouter {
     this.trace = [];
   }
 
-  #build() {
+    #build() {
     const models = this.config?.models ?? {};
     const order = this.offline
       ? ['deterministic']
-      : (models.order ?? ['openaiCompatible', 'deterministic']);
+      : (models.order ?? ['ollama', 'openaiCompatible', 'deterministic']).map(normalizeProviderId);
     const list = [];
     for (const id of order) {
-      if (id === 'openaiCompatible') list.push(new OpenAICompatibleProvider(models.openaiCompatible ?? {}));
+      if (id === 'ollama') list.push(new OllamaProvider(models.ollama ?? {}));
+      else if (id === 'openaiCompatible') list.push(new OpenAICompatibleProvider(models.openaiCompatible ?? models['openai-compatible'] ?? {}));
       else if (id === 'deterministic') list.push(new DeterministicProvider(models.deterministic ?? {}));
     }
     if (!list.length) list.push(new DeterministicProvider());
@@ -67,11 +69,10 @@ export class ModelRouter {
     return result;
   }
 
-  /** Providers that are usable right now, best first. */
+    /** Providers that are usable right now, best first. */
   async #healthyChain(order) {
     const chain = [];
     for (const id of order) {
-      if (id === 'ollama') continue;
       const provider = this.providers.find((entry) => entry.id === id);
       if (!provider) continue;
       if (!provider.ready) continue;
@@ -85,8 +86,28 @@ export class ModelRouter {
     if (this.preferred) return [this.preferred];
     const order = this.offline
       ? ['deterministic']
-      : (this.config?.models?.order ?? ['openaiCompatible', 'deterministic']);
+      : (this.config?.models?.order ?? ['ollama', 'openaiCompatible', 'deterministic']).map(normalizeProviderId);
     return this.#healthyChain(order);
+  }
+
+  /**
+   * Is a *real* language model usable right now?
+   *
+   * The deterministic design engine cannot drive a tool-calling loop (it answers
+   * from local heuristics), so the agent runtime asks this before handing a
+   * request to `runAgent` and falls back to the deterministic pipeline when false.
+   */
+  async hasLiveModel() {
+    if (this.preferred) return this.preferred.id !== 'deterministic';
+    const chain = await this.activeChain();
+    return chain.some((provider) => provider.id !== 'deterministic');
+  }
+
+  /** Human-readable description of the brain that would answer right now. */
+  async activeBrain() {
+    const chain = await this.activeChain();
+    const provider = chain[0];
+    return provider ? { id: provider.id, label: provider.label, model: provider.model, offline: provider.id === 'deterministic' } : undefined;
   }
 
   async describe({ probe = true } = {}) {
@@ -154,19 +175,22 @@ export class ModelRouter {
     });
   }
 
-  /** Free-form (or code-block) text generation. */
+    /** Free-form (or code-block) text generation. */
   async text(prompt, options = {}) {
     const {
       kind = 'chat', payload = {}, system, maxTokens = 4096,
-      temperature, phase = 'generate', code = false, languages,
+      temperature, phase = 'generate', code = false, languages, messages, onToken, liveOnly = false,
     } = options;
-    const chain = await this.activeChain();
+    const chain = (await this.activeChain()).filter((provider) => provider && (!liveOnly || provider.id !== 'deterministic'));
     const errors = [];
+    let emitted = false;
     for (const provider of chain) {
       const started = Date.now();
       try {
         const response = await provider.generate({
-          prompt,
+          prompt: messages ? undefined : prompt,
+          messages,
+          onToken: onToken ? (text) => { emitted = true; onToken(text); } : undefined,
           system: system ?? systemFor(kind),
           json: false,
           maxTokens,
@@ -184,6 +208,7 @@ export class ModelRouter {
       } catch (error) {
         errors.push(`${provider.id}: ${error?.message ?? error}`);
         this.#emitCall({ provider, kind, phase, ok: false, error: String(error?.message ?? error) });
+        if (emitted) throw error; // Never splice a fallback into a partial stream.
       }
     }
     throw new ModelError(`no provider produced text for "${kind}"`, { details: { errors } });
@@ -229,17 +254,17 @@ export class ModelRouter {
 function systemFor(kind) {
   switch (kind) {
     case 'understand':
-      return 'You are a senior frontend engineer analysing a request. Reply with STRICT JSON only. No prose, no markdown.';
+      return 'You are a senior frontend engineer classifying a request. Reply with STRICT JSON only: {"taskType": string, "intent": string, "subject": string, "scope": "component"|"page"|"app", "constraints": string[], "summary": string, "confidence": number}. taskType must be one of: create-page, create-component, create-app, enhance, redesign, motion, responsive, 3d, performance, accessibility, fix, review, library. No prose, no markdown.';
     case 'plan':
-      return 'You are a senior frontend architect. Reply with STRICT JSON only: {"steps":[{"id":string,"title":string,"goal":string,"files":string[],"skills":string[],"verification":string[]}]}. No prose.';
+      return 'You are a senior frontend architect. Plan the work. Reply with STRICT JSON only: {"steps":[{"id":string,"title":string,"goal":string,"files":string[],"skills":string[],"verification":string[]}]}. No prose, no markdown.';
     case 'direction':
-      return 'You are an award-winning art director. Reply with STRICT JSON only describing the chosen design direction.';
+      return 'You are an award-winning art director choosing a visual direction. Reply with STRICT JSON only: {"id": string, "why": string}. Only use ids from the candidates provided. No prose, no markdown.';
     case 'critique':
-      return 'You are a ruthless design reviewer. Reply with STRICT JSON only: scores per dimension and concrete fixes.';
+      return 'You are a ruthless design reviewer. Reply with STRICT JSON only: {"overall": number, "scores": {"typography":number,"spacing":number,"hierarchy":number,"interaction":number,"responsive":number,"accessibility":number}, "fixes": [{"area":string,"fix":string}]}. overall is 0-100. No prose, no markdown.';
     case 'copy':
-      return 'You are a senior copywriter for high-end product interfaces. Reply with STRICT JSON only. No prose, no markdown, no code fences.';
+      return 'You are a senior copywriter for high-end product interfaces. Reply with STRICT JSON only: {"sections":[{"type":string,"headline"?:string,"subhead"?:string,"heading"?:string,"lead"?:string,"eyebrow"?:string,"body"?:string,"items"?:string[]}]}. Follow the expertise (skills) block. No prose, no markdown, no code fences.';
     case 'code':
-      return 'You are an expert frontend engineer. Output complete, production-quality source files. No explanations.';
+      return 'You are Artisan, an autonomous frontend design agent. You build real, production-quality websites. You are given a request, workspace inspection, skills context, and tools. THINK first, then ACT using tools to read, write, patch files, and run builds. Build complete, self-contained code: HTML+CSS+JS, or JSX/React/Next.js if the project uses them. Follow the skills block for design principles.\n\nALWAYS respond with a JSON array of tool calls inside a ```json code block. Example:\n```json\n[\n  {"tool": "listFiles", "args": {}},\n  {"tool": "writeFile", "args": {"rel": "index.html", "content": "<!DOCTYPE html><html>..."}}\n]\n```\nBatch independent calls. Never use exec to write files. When done, emit [{"done":true,"summary":"..."}].\n\nDecide what to build based on the workspace: if the workspace has a package.json with react/next dependencies, write JSX/React/Next.js. Otherwise write plain HTML + CSS + JS. Never emit HTML-only — always include CSS and JS where appropriate.';
     default:
       return 'You are a precise senior frontend engineer. Reply with JSON only when JSON is requested.';
   }

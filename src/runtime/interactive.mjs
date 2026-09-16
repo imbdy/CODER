@@ -13,9 +13,11 @@
  * activeFiles) before calling runTask.
  */
 
-import { runTask } from './session.mjs';
+import { converse } from './conversation.mjs';
+import { runBuild } from './agent-build.mjs';
 import { makeId, nowIso } from '../core/util.mjs';
 import { classifyTaskType } from '../reason/understand.mjs';
+import { createRouter } from '../model/router.mjs';
 import { EventBus } from '../core/events.mjs';
 
 // ------------------------------------------------ state
@@ -375,6 +377,9 @@ async function executeBuild(buildRequest, originalRaw, state, { bus, onProgress 
       case 'file.write': progress({ type: 'edit', text: ev.rel }); break;
       case 'verify.result': progress({ type: 'verify', text: ev.summary ?? (ev.ok ? 'PASS' : 'CHECK') }); break;
       case 'improve.iteration': progress({ type: 'edit', text: `fix #${ev.iteration}` }); break;
+      case 'tool.call':
+        if (ev.tool && ev.tool !== 'writeFile') progress({ type: 'tool', text: `${ev.tool}${ev.args?.rel ? ` ${ev.args.rel}` : ''}${ev.args?.id ? ` ${ev.args.id}` : ''}` });
+        break;
       default: break;
     }
   });
@@ -383,11 +388,12 @@ async function executeBuild(buildRequest, originalRaw, state, { bus, onProgress 
   // we could enrich with workspace context but keep it minimal to avoid poisoning
   try {
     let outcome;
-    outcome = await runTask(enriched, {
+    outcome = await runBuild(enriched, {
       workspaceDir: state.workspaceDir,
       config: state.config,
       overrides: { maxIterations: 2 },
       bus: liveBus,
+      progress,
     });
     off();
     const run = outcome.run;
@@ -452,8 +458,128 @@ async function executeBuild(buildRequest, originalRaw, state, { bus, onProgress 
   }
 }
 
+// ------------------------------------------------ conversation (real chat)
+
+/** Does this message ask for code/design work, or is it just conversation? */
+const REFINE_RE = /\b(build|create|make|add|change|swap|switch|use|remove|delete|drop|fix|update|rewrite|refactor|implement|animate|redesign|polish|improve|shrink|enlarge|darken|lighten|recolor|recolour|move|replace|tweak|adjust|scaffold|convert)\b|\b(hero|navbar|nav|footer|header|button|card|form|login|signup|pricing|testimonial|faq|section|page|site|website|landing|dashboard|component|css|stylesheet|font|typeface|palette|colou?r|accent|animation|transition|motion|hover|scroll|responsive|mobile|theme|layout|grid|spacing)\b/i;
+
+export function looksLikeRefinement(text) {
+  return REFINE_RE.test(String(text ?? ''));
+}
+
+/** The system prompt for plain conversation — no tools, no code, just talking. */
+function chatSystemPrompt(state) {
+  const intent = state.designIntentObj ?? {};
+  const intentBits = [
+    intent.product && `product/brand: ${intent.product}`,
+    intent.pageType && `page type: ${intent.pageType}`,
+    intent.visualDirection?.length && `visual direction: ${intent.visualDirection.join(', ')}`,
+    intent.motion && `motion: ${intent.motion}`,
+    intent.depth && `depth: ${intent.depth}`,
+    intent.tone && `tone: ${intent.tone}`,
+    intent.features?.length && `wants: ${intent.features.join(', ')}`,
+  ].filter(Boolean);
+  const inspection = state.lastInspection ?? {};
+  const lines = [
+    'You are Artisan — a senior frontend designer and engineer, chatting with one user in a terminal.',
+    '',
+    'STYLE: talk like a person. Short, warm, direct — one to four sentences unless they ask for detail.',
+    'No headings, no bullet lists unless they genuinely help. Never say you are an AI or a language model.',
+    'You can talk about anything: their idea, design opinions, fonts, colour, motion, tradeoffs — or small talk.',
+    'If they ask how you are or say hi, answer like a friendly human teammate would ("Pretty good — ready when you are").',
+    'Never deflect with "I am just a program/computer/AI".',
+    'When they describe something they want built or changed, be a good design partner: reflect the direction back',
+    'in a line, maybe ask ONE sharp question, and let them know to say "Build it" when they want the actual code.',
+    'Never write code or file contents while chatting.',
+    '',
+    `Workspace: ${state.workspaceDir}`,
+    `- project kind: ${inspection.kind ?? 'unknown'} | framework: ${inspection.framework ?? 'none'} | styling: ${inspection.styling ?? 'plain-css'}`,
+  ];
+  if (state.activeFiles.length) lines.push(`- files built so far: ${state.activeFiles.slice(0, 6).join(', ')}`);
+  lines.push(intentBits.length ? `- what they asked for so far: ${intentBits.join(' | ')}` : '- what they asked for so far: nothing yet');
+  return lines.join('\n');
+}
+
+/** Canned reply only used when no live model is reachable. */
+function fallbackChatReply(state) {
+  const intent = state.designIntent;
+  if (state.activeFiles.length) {
+    return `Still here. So far I built: ${state.activeFiles.join(', ')}. Tell me what to change, or say "Build it" with a new idea.`;
+  }
+  if (intent) {
+    return `Noted — direction so far: ${String(intent).slice(0, 140)}. Say "Build it" whenever you want the code.`;
+  }
+  return `Hey — I'm Artisan. Tell me what you want to build (for example "a dark landing page for a coffee brand"), we refine it together, and I write the code when you say "Build it".\n\n(I can't reach a live model right now, so this reply is canned — start Ollama with qwen2.5-coder:7b for real conversation.)`;
+}
+
+/**
+ * Real conversation turn: the model answers, we keep a compact history.
+ * Falls back to a canned line when no LLM is reachable so the REPL never dies.
+ */
+export async function chatReply(rawRequest, state) {
+  const request = String(rawRequest ?? '').trim();
+  state.turnCount += 1;
+  state.conversation.push({ role: 'user', text: request, at: nowIso() });
+
+  // Fold real design signal into the session intent — never chitchat or questions.
+  const isJustAQuestion = classifyMessage(request) === 'question' || /\?\s*$/.test(request);
+  if (!isJustAQuestion && (looksLikeRefinement(request) || request.length > 40)) {
+    try {
+      const upd = extractDesignIntent(request);
+      if (upd.product || upd.pageType || upd.visualDirection.length || upd.tone || upd.features.length || upd.depth || upd.motion) {
+        state.designIntentObj = mergeDesignIntent(state.designIntentObj, upd);
+        state.designIntent = state.designIntent
+          ? `${state.designIntent} | ${request}`.slice(0, 600)
+          : request.slice(0, 300);
+      }
+    } catch { /* intent capture is best-effort */ }
+  }
+
+  // Ground the chat in what the workspace actually is (cheap, read-only).
+  try {
+    const { inspectWorkspace } = await import('../workspace/scanner.mjs');
+    const inspection = inspectWorkspace(state.workspaceDir, state.config);
+    state.lastInspection = { kind: inspection.projectKind, framework: inspection.framework, styling: inspection.styling };
+  } catch { /* keep previous knowledge */ }
+
+  let text = '';
+  try {
+    const router = createRouter({ config: state.config });
+    if (await router.hasLiveModel()) {
+      const history = state.conversation.slice(-10).map((message) => ({
+        role: message.role === 'user' ? 'user' : 'assistant',
+        content: String(message.text ?? '').slice(0, 700),
+      }));
+      const response = await router.text(undefined, {
+        kind: 'chat',
+        system: chatSystemPrompt(state),
+        messages: history,
+        maxTokens: 600,
+        temperature: 0.7,
+        phase: 'chat',
+      });
+      text = String(response.text ?? '').trim();
+    }
+  } catch { /* fall through to the canned reply */ }
+
+  if (!text) text = fallbackChatReply(state);
+  state.conversation.push({ role: 'assistant', text, at: nowIso() });
+  return { kind: 'answer', text, state };
+}
+
 // ------------------------------------------------ execution with TODO / progress
-export async function executeTurn(rawRequest, state, { bus, onProgress } = {}) {
+export async function executeTurn(rawRequest, state, { bus, onProgress, onToken } = {}) {
+  const input = String(rawRequest ?? '').trim();
+  if (!input) return { kind: 'empty' };
+  if (input.startsWith('/')) {
+    const command = handleCommand(input, state);
+    return { kind: command.exit ? 'exit' : 'answer', text: command.text, state };
+  }
+  return converse(input, state, { bus, onProgress, onToken });
+}
+
+/** Retained deterministic interaction path for offline integrations. */
+export async function executeLegacyTurn(rawRequest, state, { bus, onProgress } = {}) {
   const request = String(rawRequest ?? '').trim();
   if (!request) return { kind: 'empty' };
 
@@ -467,8 +593,13 @@ export async function executeTurn(rawRequest, state, { bus, onProgress } = {}) {
     if (cmd.exit) return { kind: 'exit', state };
     return { kind: 'answer', text: cmd.text, state };
   }
-  if (kind === 'question' || kind === 'status') {
+  if (kind === 'status') {
+    // Session introspection stays deterministic — it reads state, not opinions.
     return handleQuestion(request, state, kind);
+  }
+  if (kind === 'question') {
+    // Anything conversational goes to the model.
+    return chatReply(request, state);
   }
 
   // --- TWO-PHASE: DISCUSS vs BUILD ---
@@ -502,33 +633,15 @@ export async function executeTurn(rawRequest, state, { bus, onProgress } = {}) {
     return executeBuild(buildRequest, request, state, { bus, onProgress });
   }
 
-  // If we are still in discuss phase and have no completed builds, treat input as discussion (not yet execution)
+  // If we are still in discuss phase and have no completed builds, this is a
+  // conversation turn: the model replies, and "Build it" above starts the work.
   if (state.phase === 'discuss' && state.taskHistory.length === 0) {
-    // Heuristic: if request is an idea description (not a direct build), discuss
-    // We treat any non-build-trigger, non-question input as discussion while in discuss phase before first build
-    // But if request looks like a direct build (contains build verb and is actionable), it would have been caught as isBuildTrigger above
-    // So remaining inputs are discussion refinements
-    const upd = extractDesignIntent(request);
-    // Merge, handling negation etc.
-    state.designIntentObj = mergeDesignIntent(state.designIntentObj, upd);
-    // update legacy string
-    if (!state.designIntent) state.designIntent = request.slice(0, 300);
-    else if (request.length > 10 && !state.designIntent.toLowerCase().includes(request.toLowerCase().slice(0, 20))) {
-      state.designIntent = `${state.designIntent} | ${request}`.slice(0, 600);
-    }
-    state.conversation.push({ role: 'user', text: request, at: nowIso() });
-    state.turnCount += 1;
-    // Optionally inspect workspace lightly to ground discussion (non-destructive)
-    // We do a light inspect but don't emit heavy progress
-    try {
-      // light inspect for stack awareness — we don't write files
-      const { inspectWorkspace } = await import('../workspace/scanner.mjs');
-      const inspection = inspectWorkspace(state.workspaceDir, state.config);
-      state.lastInspection = { kind: inspection.projectKind, framework: inspection.framework, styling: inspection.styling };
-    } catch {}
-    const reply = generateDiscussionReply(state, request);
-    state.conversation.push({ role: 'assistant', text: reply, at: nowIso() });
-    return { kind: 'discuss', text: reply, state, designIntent: state.designIntentObj };
+    return chatReply(request, state);
+  }
+
+  // After the first build: refinement requests execute, everything else is chat.
+  if (!looksLikeRefinement(request)) {
+    return chatReply(request, state);
   }
 
   // Otherwise: treat as execution task (follow-up modification or direct build after initial phase)
@@ -594,11 +707,12 @@ export async function executeTurn(rawRequest, state, { bus, onProgress } = {}) {
 
   let outcome;
   try {
-    outcome = await runTask(enriched, {
+    outcome = await runBuild(enriched, {
       workspaceDir: state.workspaceDir,
       config: state.config,
       overrides: { maxIterations: 2 },
       bus: liveBus,
+      progress,
     });
   } catch (e) {
     state.unresolvedIssues.push(String(e?.message ?? e).slice(0, 200));

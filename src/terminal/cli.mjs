@@ -25,6 +25,9 @@ export async function main(argv = process.argv.slice(2)) {
     // `artisan chat --help` should still show help, not enter REPL
     if (flags.help) { printHelp(); return 0; }
     const ws = path.resolve(String(flags.workspace ?? process.cwd()));
+    // The agent writes into this folder; create it on demand so a fresh
+    // project can be started straight from the chat command.
+    if (!fs.existsSync(ws)) fs.mkdirSync(ws, { recursive: true });
     const { runChat } = await import('./chat.mjs');
     return runChat({ workspaceDir: ws, flags });
   }

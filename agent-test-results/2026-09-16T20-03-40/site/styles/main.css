@@ -1,0 +1,129 @@
+:root {
+  --primary: #3b2f2f;
+  --neutral: #faf6f1;
+  --accent: #c97a3a;
+  --space-4: 4px;
+  --space-8: 8px;
+  --space-16: 16px;
+  --space-24: 24px;
+  --space-32: 32px;
+  --space-48: 48px;
+  --space-64: 64px;
+  --font-sans: "Inter", system-ui, sans-serif;
+  --font-display: "Fraunces", Georgia, serif;
+  --radius-md: 16px;
+  --text-base: 1rem;
+  --text-3xl: clamp(1.875rem, 2rem + 0.5vw, 2.25rem);
+}
+
+body {
+  margin: 0;
+  padding: 0;
+  font-family: var(--font-sans);
+  background-color: var(--primary);
+  color: var(--neutral);
+}
+
+.hero {
+  display: grid;
+  gap: var(--space-32);
+  padding: var(--space-64);
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+}
+
+.hero h1 {
+  font-size: var(--text-3xl);
+  font-weight: 700;
+  line-height: 1;
+  letter-spacing: -0.02em;
+  color: var(--accent);
+}
+
+.hero p {
+  font-size: var(--text-base);
+  line-height: 1.5;
+  color: var(--neutral);
+}
+
+.features {
+  display: grid;
+  gap: var(--space-32);
+  padding: var(--space-64);
+  background-color: var(--neutral);
+  color: var(--primary);
+}
+
+.feature {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+}
+
+.feature h2 {
+  font-size: var(--text-3xl);
+  font-weight: 700;
+  line-height: 1;
+  letter-spacing: -0.02em;
+  color: var(--accent);
+}
+
+.feature p {
+  font-size: var(--text-base);
+  line-height: 1.5;
+  color: var(--primary);
+}
+
+.feature img {
+  max-width: 100%;
+  height: auto;
+  margin-top: var(--space-16);
+}
+
+.footer {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: var(--space-64);
+  background-color: var(--primary);
+  color: var(--neutral);
+}
+
+.footer h2 {
+  font-size: var(--text-3xl);
+  font-weight: 700;
+  line-height: 1;
+  letter-spacing: -0.02em;
+  color: var(--accent);
+}
+
+.footer p {
+  font-size: var(--text-base);
+  line-height: 1.5;
+  color: var(--neutral);
+}
+
+@media (max-width: 768px) {
+  .hero {
+    grid-template-columns: 1fr;
+  }
+
+  .features {
+    grid-template-columns: 1fr;
+  }
+
+  .footer {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation: none !important;
+    transition: none !important;
+  }
+}

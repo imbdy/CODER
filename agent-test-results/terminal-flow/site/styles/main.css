@@ -1,0 +1,1 @@
+:root { --ink: #245cbb; } body { color: var(--ink); display: grid; } @media(max-width:600px){body{padding:1rem}} @media(prefers-reduced-motion:reduce){*{transition:none}}

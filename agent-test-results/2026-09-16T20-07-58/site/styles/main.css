@@ -1,0 +1,73 @@
+:root {
+  --primary: #3b2f2f;
+  --neutral: #faf6f1;
+  --accent: #c97a3a;
+  --space-4: 4px;
+  --space-8: 8px;
+  --space-16: 16px;
+  --space-24: 24px;
+  --space-32: 32px;
+  --space-48: 48px;
+  --space-64: 64px;
+  --font-sans: "Inter", system-ui, sans-serif;
+  --font-display: "Fraunces", Georgia, serif;
+  --radius-md: 16px;
+}
+
+body {
+  margin: 0;
+  padding: 0;
+  font-family: var(--font-sans);
+  background-color: var(--primary);
+  color: var(--neutral);
+}
+
+.hero {
+  display: grid;
+  gap: 32px;
+  padding: var(--space-64);
+  align-items: center;
+  justify-content: center;
+}
+
+.hero h1 {
+  font-size: var(--text-48);
+  line-height: 1.2;
+  letter-spacing: -0.02em;
+  color: var(--accent);
+}
+
+.hero p {
+  font-size: var(--text-24);
+  line-height: 1.6;
+  color: var(--neutral);
+}
+
+.hero button {
+  padding: var(--space-16) var(--space-24);
+  font-size: var(--text-20);
+  border: none;
+  border-radius: var(--radius-md);
+  background-color: var(--accent);
+  color: var(--neutral);
+  cursor: pointer;
+  transition: background-color 160ms ease;
+}
+
+.hero button:hover {
+  background-color: var(--accent-hover);
+}
+
+@media (max-width: 768px) {
+  .hero {
+    grid-template-columns: 1fr;
+    padding: var(--space-32);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation: none !important;
+    transition-duration: 0.01ms !important;
+  }
+}

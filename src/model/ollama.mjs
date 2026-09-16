@@ -49,13 +49,14 @@ export class OllamaProvider extends ModelProvider {
     }
   }
 
-  async generate({ messages, system, prompt, temperature, maxTokens, json, numCtx }) {
+  async generate({ messages, system, prompt, temperature, maxTokens, json, numCtx, onToken }) {
     const chatMessages = [];
     if (system) chatMessages.push({ role: 'system', content: system });
     if (messages?.length) chatMessages.push(...messages);
     if (prompt) chatMessages.push({ role: 'user', content: prompt });
 
     const started = Date.now();
+    const useStream = typeof onToken === 'function';
     let response;
     try {
       response = await this.#fetch('/api/chat', {
@@ -64,7 +65,7 @@ export class OllamaProvider extends ModelProvider {
         body: JSON.stringify({
           model: this.model,
           messages: chatMessages.map((message) => ({ role: message.role === 'system' ? 'system' : message.role, content: message.content })),
-          stream: false,
+          stream: useStream,
           keep_alive: this.keepAlive,
           format: json ? 'json' : undefined,
           options: {
@@ -85,8 +86,53 @@ export class OllamaProvider extends ModelProvider {
       throw new ModelError(`ollama responded ${response.status}: ${body.slice(0, 300)}`);
     }
 
+    if (useStream && response.body) {
+      // Stream NDJSON: each line is JSON with {message:{content}, done}
+      const decoder = new TextDecoder();
+      let buffer = '';
+      let fullText = '';
+      let lastData = null;
+      const consume = (line) => {
+        if (!line.trim()) return;
+        const obj = JSON.parse(line);
+        if (obj.error) throw new ModelError(String(obj.error));
+        lastData = obj;
+        const piece = obj.message?.content ?? '';
+        if (piece) { fullText += piece; onToken(piece); }
+      };
+      try {
+        for await (const chunk of response.body) {
+          buffer += decoder.decode(chunk, { stream: true });
+          const lines = buffer.split('\n');
+          buffer = lines.pop() ?? '';
+          for (const line of lines) consume(line);
+        }
+        consume(buffer + decoder.decode());
+        if (!lastData?.done) throw new ModelError('stream ended without a completion marker');
+      } catch (error) {
+        this.recordFailure();
+        throw new ModelError(`ollama stream failed: ${error?.message ?? error}`);
+      }
+      const data = lastData ?? {};
+      this.recordSuccess({
+        promptTokens: data.prompt_eval_count ?? 0,
+        completionTokens: data.eval_count ?? 0,
+        ms: Date.now() - started,
+      });
+      return {
+        text: fullText,
+        provider: this.id,
+        model: this.model,
+        promptTokens: data.prompt_eval_count ?? 0,
+        completionTokens: data.eval_count ?? 0,
+        ms: Date.now() - started,
+        raw: data,
+      };
+    }
+
     const data = await response.json();
     const text = data?.message?.content ?? '';
+    if (useStream && text) { try { onToken(text); } catch {} }
     this.recordSuccess({
       promptTokens: data.prompt_eval_count ?? 0,
       completionTokens: data.eval_count ?? 0,

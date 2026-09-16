@@ -1,0 +1,1 @@
+const b=document.querySelector("#toggle"), p=document.querySelector("#detail"); if(b&&p)b.addEventListener("click",()=>{p.hidden=!p.hidden});

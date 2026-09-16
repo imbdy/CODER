@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Ember & Oak</title>
+  <link rel="stylesheet" href="styles/main.css">
+</head>
+<body>
+  <header>
+    <h1>Ember & Oak</h1>
+  </header>
+  <main>
+    <section class="hero">
+      <div class="hero-content">
+        <h2>Welcome to Ember & Oak</h2>
+        <p>Your premium destination for exceptional products.</p>
+        <button class="cta">Shop Now</button>
+      </div>
+    </section>
+    <section class="features">
+      <h2>Features</h2>
+      <div class="feature">
+        <h3>Feature 1</h3>
+        <p>Description of Feature 1.</p>
+      </div>
+      <div class="feature">
+        <h3>Feature 2</h3>
+        <p>Description of Feature 2.</p>
+      </div>
+      <div class="feature">
+        <h3>Feature 3</h3>
+        <p>Description of Feature 3.</p>
+      </div>
+    </section>
+  </main>
+  <footer>
+    <p>&copy; 2023 Ember & Oak. All rights reserved.</p>
+  </footer>
+  <script type="module" src="scripts/main.js"></script>
+</body>
+</html>

@@ -4,7 +4,7 @@ import { readWorkspaceFile, writeWorkspaceFile, applySearchReplace, resolveInWor
 import { walk } from '../workspace/files.mjs';
 import { ToolError } from '../core/errors.mjs';
 const BLOCKED = [/rm\s+-rf\s+\//i, /:\(\)\s*\{.*\}.*&/i, /mkfs/i, /shutdown/i, /reboot/i, /format\s+[a-z]:/i];
-export function createToolContext({ workspaceDir, config, bus, dryRun = false } = {}) {
+export function createToolContext({ workspaceDir, config, bus, dryRun = false, registry = undefined } = {}) {
   const calls = [];
   const record = (tool, args, result) => {
     calls.push({ tool, args, ok: !result?.error, at: new Date().toISOString() });
@@ -52,6 +52,24 @@ export function createToolContext({ workspaceDir, config, bus, dryRun = false } 
       });
     },
     resolve(rel) { return resolveInWorkspace(workspaceDir, rel); },
+    /** Skill catalogue — ids + one-line descriptions, cheap enough for every turn. */
+    listSkills() {
+      const skills = registry ? registry.list() : [];
+      const list = skills.map((skill) => ({ id: skill.id, category: skill.category, description: skill.description }));
+      record('listSkills', {}, { count: list.length });
+      return list;
+    },
+    /** Full expert guidance for one skill. The agent is expected to use this. */
+    readSkill(id) {
+      const wanted = String(id ?? '').trim();
+      const skill = registry?.get(wanted);
+      if (!skill) {
+        const available = registry ? registry.list().map((entry) => entry.id).join(', ') : 'none loaded';
+        throw new ToolError(`unknown skill: ${wanted}. Available: ${available}`);
+      }
+      record('readSkill', { id: skill.id }, { tokens: skill.tokens });
+      return `# Skill: ${skill.name}\n> ${skill.description}\n> category: ${skill.category}${skill.libraries.length ? ` | libraries: ${skill.libraries.join(', ')}` : ''}\n\n${skill.body}`;
+    },
   };
   return ctx;
 }
@@ -61,4 +79,6 @@ export const TOOL_DEFS = [
   { name: 'patchFile', desc: 'Search/replace patch with fuzzy fallback' },
   { name: 'listFiles', desc: 'List workspace files' },
   { name: 'exec', desc: 'Run an allow-listed shell command' },
+  { name: 'listSkills', desc: 'List available design skills' },
+  { name: 'readSkill', desc: 'Read one skill (expert guidance) by id' },
 ];
