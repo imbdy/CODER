@@ -1,0 +1,64 @@
+{
+  "version": 1,
+  "createdAt": "2026-09-16T14:42:00.912Z",
+  "updatedAt": "2026-09-16T14:42:00.912Z",
+  "runs": [
+    {
+      "id": "run_03541bca",
+      "request": "Build a premium immersive landing page for Neon with cinematic hero featuring Three.js WebGL 3D scene with floating orbs that react to mouse and scroll, glassmorphism hero card, scroll-driven storytelling with pinned sections pin scrub, parallax depth layers, horizontal scroll gallery with 3 cards, subtle motion with staggered reveals, and fully responsive design. Use Aurora Depth direction, dark theme, brand color #7c5cff.",
+      "taskType": "create-page",
+      "at": "2026-09-16T14:42:00.912Z",
+      "status": "done",
+      "score": 90,
+      "skills": [
+        "anti-slop",
+        "frontend-master",
+        "visual-design",
+        "threejs",
+        "gsap",
+        "animation-principles",
+        "floating-elements"
+      ],
+      "files": [
+        "index.html",
+        "styles/main.css",
+        "scripts/main.js"
+      ],
+      "direction": "Aurora Depth"
+    }
+  ],
+  "designLanguage": {
+    "direction": "Aurora Depth",
+    "tokens": {
+      "accent": "#7c5cff",
+      "theme": "dark",
+      "direction": "aurora-depth"
+    },
+    "updatedAt": "2026-09-16T14:42:00.912Z"
+  },
+  "decisions": [
+    {
+      "kind": "direction",
+      "choice": "aurora-depth",
+      "why": "heuristic",
+      "runId": "run_03541bca"
+    }
+  ],
+  "registry": {
+    "created": [
+      "index.html",
+      "styles/main.css",
+      "scripts/main.js"
+    ],
+    "modified": []
+  },
+  "history": [
+    {
+      "id": "run_03541bca",
+      "request": "Build a premium immersive landing page for Neon with cinematic hero featuring Three.js WebGL 3D scene with floating orbs that react to mouse and scroll, glassmorphism hero card, scroll-driven storytelling with pinned sections pin scrub, parallax depth layers, horizontal scroll gallery with 3 cards, subtle motion with staggered reveals, and fully responsive design. Use Aurora Depth direction, dark theme, brand color #7c5cff.",
+      "at": "2026-09-16T14:42:00.912Z",
+      "status": "done",
+      "score": 90
+    }
+  ]
+}

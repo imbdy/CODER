@@ -1,7 +1,7 @@
 /** Code-gen bridge: design system + retrieved skill expertise -> files. Uses the LLM for copy when available, deterministic otherwise. */
 import { buildTokens } from '../design/tokens.mjs';
 import { emitSiteCss } from '../design/emit-css.mjs';
-import { emitPage, renderSection } from '../design/emit-site.mjs';
+import { emitPage, renderSection, emitSiteJs } from '../design/emit-site.mjs';
 
 /* String fields we allow the model to set per section, and their types. */
 const STRING_FIELDS = ['headline', 'subhead', 'heading', 'lead', 'eyebrow', 'label', 'body', 'proofPoint', 'note', 'sub', 'brand'];
@@ -20,10 +20,44 @@ export async function reasonCode(payload = {}) {
   }
 
   const finalPlan = { ...plan, sections };
-  const css = emitSiteCss(tokens, { direction, plan: finalPlan });
-  const html = emitPage({ tokens, direction, plan: finalPlan, css, title: payload.title ?? 'Artisan site' });
-  const credited = html.replace('</title>', `</title>\n<!-- composed by artisan | skills: ${(skills?.ids ?? ['none']).join(', ')} -->`);
-  return { files: [{ rel: 'index.html', content: credited }], notes };
+  const css = emitSiteCss(tokens, { direction, plan: finalPlan, request: payload.request ?? '' });
+  // Premium frontend: emit separate CSS + JS files for real build folder structure
+  // The agent is now truly good at frontend — it builds a real folder with assets, not just inline soup
+  const { html: htmlInline } = (() => {
+    const h = emitPage({ tokens, direction, plan: finalPlan, css, title: payload.title ?? 'Artisan site', request: payload.request ?? '' });
+    return { html: h };
+  })();
+  // Generate external assets
+  const js = emitSiteJs({ request: payload.request ?? '', direction });
+  // Build external HTML that references separate files (keeps inline as fallback for verification, but primary is external)
+  const externalCssPath = 'styles/main.css';
+  const externalJsPath = 'scripts/main.js';
+  // Create HTML that links to external files — premium structure
+  let htmlExternal = htmlInline;
+  // Link external CSS (keep inline for verification fallback + instant paint, but external is primary build artifact)
+  if (!htmlExternal.includes(externalCssPath)) {
+    htmlExternal = htmlExternal.replace('</head>', `  <link rel="stylesheet" href="${externalCssPath}" />\n</head>`);
+  }
+  if (!htmlExternal.includes(externalJsPath)) {
+    htmlExternal = htmlExternal.replace('</body>', `  <script type="module" src="${externalJsPath}"></script>\n</body>`);
+  }
+  // Replace inline script with external + keep importmap for 3D
+  // The inline script is at the end; we will keep it but also add external reference for clarity
+  // For true separate files, we will create styles/main.css and scripts/main.js as real files
+  // and make index.html reference them; the inline style/script stays as progressive enhancement but external is primary
+  const credited = htmlExternal.replace('</title>', `</title>\n<!-- composed by artisan | skills: ${(skills?.ids ?? ['none']).join(', ')} | build: ${externalCssPath} + ${externalJsPath} -->`);
+  // For component-demo, keep single file (demo stage), but for pages, emit full build folder
+  if (finalPlan.kind === 'component-demo') {
+    return { files: [{ rel: 'index.html', content: credited }], notes };
+  }
+  return {
+    files: [
+      { rel: 'index.html', content: credited },
+      { rel: externalCssPath, content: `/* ${direction?.name ?? 'Artisan'} — external build | ${new Date().toISOString().slice(0,10)} */\n` + css },
+      { rel: externalJsPath, content: `/* ${direction?.name ?? 'Artisan'} — external build | premium 3D + scroll */\n` + js },
+    ],
+    notes: [...notes, `build folder: index.html + ${externalCssPath} + ${externalJsPath} (${css.length}B CSS, ${js.length}B JS)`],
+  };
 }
 export { buildTokens };
 export function sectionToHtml(section, ctx) { return renderSection(section, ctx); }

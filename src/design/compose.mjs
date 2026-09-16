@@ -138,9 +138,11 @@ export function deriveSubject(request, { fallback = 'Project' } = {}) {
   }
   const quoted = text.match(/["\u201c\u201d']([^"'\u201c\u201d]{3,40})["\u201c\u201d']/);
   if (quoted) return { subject: quoted[1], domain: 'brand', matchedOn: 'quoted' };
-  const proper = text.match(/\b([A-Z][a-z]{2,}(?:\s+[A-Z][a-z]{2,}){0,2})\b/);
-  if (proper && !/^(Build|Make|Create|Add|Redesign|The|And)$/.test(proper[1])) {
-    return { subject: proper[1], domain: 'brand', matchedOn: 'proper-noun' };
+  const propers = [...text.matchAll(/\b([A-Z][a-z]{2,}(?:\s+[A-Z][a-z]{2,}){0,2})\b/g)];
+  for (const proper of propers) {
+    if (!/^(Build|Make|Create|Add|Redesign|The|And|With|Use)$/.test(proper[1])) {
+      return { subject: proper[1], domain: 'brand', matchedOn: 'proper-noun' };
+    }
   }
   return { subject: fallback, domain: 'general', matchedOn: 'fallback' };
 }

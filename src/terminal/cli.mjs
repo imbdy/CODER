@@ -17,6 +17,17 @@ export async function main(argv = process.argv.slice(2)) {
   const args = parseCliArgs(argv);
   const flags = args.flags;
   if (flags.help || args.requestText === 'help') { printHelp(); return 0; }
+  // chat is a first-class entry — `artisan chat` or `npm run artisan -- chat`
+  // also supports --chat flag
+  const rawFirst = String(args.request[0] ?? '').toLowerCase();
+  const wantsChat = rawFirst === 'chat' || Boolean(flags.chat);
+  if (wantsChat) {
+    // `artisan chat --help` should still show help, not enter REPL
+    if (flags.help) { printHelp(); return 0; }
+    const ws = path.resolve(String(flags.workspace ?? process.cwd()));
+    const { runChat } = await import('./chat.mjs');
+    return runChat({ workspaceDir: ws, flags });
+  }
   if (!args.requestText) { printBanner(); printHelp(); return 0; }
 
   const firstWord = args.requestText.split(/\s+/)[0].toLowerCase();

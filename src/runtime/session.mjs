@@ -16,8 +16,8 @@ import { reasonCode } from '../reason/code.mjs';
 import { reasonCritique } from '../reason/critique.mjs';
 import { recordRun } from '../workspace/memory.mjs';
 import { makeId } from '../core/util.mjs';
-export async function runTask(request, { workspaceDir, config, overrides = {} } = {}) {
-  const bus = new EventBus();
+export async function runTask(request, { workspaceDir, config, overrides = {}, bus: externalBus } = {}) {
+  const bus = externalBus ?? new EventBus();
   const logger = config?.logger ?? silentLogger;
   const run = { id: makeId('run'), request, status: 'running', startedAt: new Date().toISOString(), decisions: [], writes: [] };
   bus.emit(EVENT.RUN_START, { id: run.id, request });
@@ -57,7 +57,8 @@ export async function runTask(request, { workspaceDir, config, overrides = {} } 
     if (ENHANCE_TYPES.includes(understanding.taskType)) {
       const existingRel = tools.listFiles().find((rel) => /^index\.html?$/i.test(rel));
       if (existingRel) {
-        code = await enhanceExistingFile({ existingRel, taskType: understanding.taskType, tokens, direction, tools });
+        // pass raw request so enhancement can apply targeted tweaks (color, sizing)
+        code = await enhanceExistingFile({ existingRel, taskType: understanding.taskType, tokens, direction, tools, request });
       }
     }
     if (!code) {
@@ -115,10 +116,11 @@ export async function runTask(request, { workspaceDir, config, overrides = {} } 
  * Inject a targeted layer into an existing page without touching its markup.
  * Returns the same shape as reasonCode: { files, notes }.
  */
-async function enhanceExistingFile({ existingRel, taskType, tokens, direction, tools }) {
+async function enhanceExistingFile({ existingRel, taskType, tokens, direction, tools, request = '' }) {
   const source = tools.readFile(existingRel);
   const notes = [];
   const injections = [];
+  const rawRequest = String(request ?? '');
 
   if (taskType === 'motion' || taskType === 'enhance') {
     injections.push('/* ---- artisan motion layer ---- */\n' + emitMotionCss());
@@ -136,8 +138,55 @@ async function enhanceExistingFile({ existingRel, taskType, tokens, direction, t
 }`);
     notes.push('responsive layer injected (tablet + mobile breakpoints)');
   }
-  if (taskType === '3d') {
-    injections.push(`/* ---- artisan depth layer ---- */
+  // Targeted tweaks for follow-ups like "make the card smaller", "make button red", "change background"
+  // Only inspect the primary request part before session context, to avoid prior context polluting tweaks
+  const primary = String(rawRequest).split('[session context:')[0].toLowerCase();
+  const t = primary;
+  if (/\b(red)\b/.test(t)) {
+    injections.push('/* tweak: red accent */\n:root { --color-accent: #d43a2f !important; --color-accent-hover: #b62f25 !important; } .btn--primary{ background: var(--color-accent) !important; }');
+    notes.push('accent tweaked to red per request');
+  } else if (/\b(blue)\b/.test(t)) {
+    injections.push('/* tweak: blue accent */\n:root { --color-accent: #2f5dd4 !important; --color-accent-hover: #244ab0 !important; }');
+    notes.push('accent tweaked to blue per request');
+  }
+  if (/\b(smaller|compact|narrow)\b/.test(t) && /\b(card|auth)\b/.test(t)) {
+    injections.push('/* tweak: smaller card */\n.auth__card, .card { max-width: 26rem !important; padding: var(--space-6) !important; }');
+    notes.push('card sizing tweaked (smaller) per request');
+  } else if (/\b(smaller|compact)\b/.test(t)) {
+    injections.push('/* tweak: compact sizing */\n.container { max-width: 56rem !important; }');
+    notes.push('compact sizing tweak per request');
+  }
+  if (/\b(background|bg)\b/.test(t) && /\b(change|dark|light|blue|red|premium)\b/.test(t)) {
+    injections.push('/* tweak: background */\nbody { background: var(--color-surface-alt) !important; }');
+    notes.push('background tweak per request');
+  }
+
+  // Premium 3D + scroll handling — detect intent from primary request
+  const wants3D = /\b(3d|three\.?js|webgl|depth|immersive)\b/i.test(primary) || taskType === '3d';
+  const wantsScroll = /\b(scroll|pin|scrub|parallax|horizontal|gsap|cinematic|storytelling|glassmorphism)\b/i.test(primary) || taskType === 'motion' || taskType === 'enhance';
+  const wantsPremium = wants3D || wantsScroll || /\b(premium|cinematic|high.?end)\b/i.test(primary);
+
+  if (wants3D || taskType === '3d') {
+    // Upgrade from simple perspective to real WebGL when premium, else keep lightweight
+    if (wantsPremium && !source.includes('hero-webgl')) {
+      injections.push(`/* ---- artisan premium 3D ---- */
+.hero--premium { position: relative; overflow: clip; }
+.hero-webgl { position: absolute; inset: 0; width: 100%; height: 100%; z-index: 0; pointer-events: none; opacity: 0.95; }
+.hero-webgl canvas { width: 100% !important; height: 100% !important; display: block; }
+.hero--premium .container { position: relative; z-index: 1; }
+.hero__orb { position: absolute; border-radius: 50%; background: radial-gradient(circle at 30% 30%, var(--color-accent), transparent 70%); filter: blur(18px); opacity: 0.55; pointer-events: none; }
+.hero__orb--1 { width: 420px; height: 420px; top: -8%; right: -6%; }
+.hero__orb--2 { width: 300px; height: 300px; bottom: 10%; left: 6%; opacity: 0.35; }
+.hero__orb--3 { width: 180px; height: 180px; top: 42%; right: 22%; opacity: 0.4; }
+.scroll-pin { position: relative; }
+.scroll-pin__sticky { position: sticky; top: 0; height: 100vh; display: grid; place-items: center; overflow: hidden; }
+.parallax { will-change: transform; }
+.glass { background: color-mix(in oklab, var(--color-surface) 72%, transparent); backdrop-filter: blur(16px) saturate(1.2); border: 1px solid color-mix(in oklab, var(--color-border) 70%, transparent); }
+@media (max-width: 60rem) { .hero-webgl { opacity: 0.6; } .scroll-pin__sticky { height: auto; position: relative; } }
+@media (prefers-reduced-motion: reduce) { .hero-webgl { display: none !important; } .parallax { transform: none !important; } }`);
+      notes.push('premium 3D layer injected (WebGL canvas + orbs + scroll scaffolding)');
+    } else if (!wantsPremium) {
+      injections.push(`/* ---- artisan depth layer ---- */
 #main, main { perspective: 1200px; }
 .hero, section:first-of-type {
   transform-style: preserve-3d;
@@ -154,10 +203,50 @@ async function enhanceExistingFile({ existingRel, taskType, tokens, direction, t
   #main, main { perspective: none; }
   .hero::before, section:first-of-type::before { transform: none; background: none; }
 }`);
-    notes.push('depth layer injected (one atmospheric effect + reduced-motion guard)');
+      notes.push('depth layer injected (one atmospheric effect + reduced-motion guard)');
+    }
+  }
+  if (wantsScroll && !source.includes('ScrollTrigger') && !source.includes('hero-webgl')) {
+    // If we didn't already inject premium 3D which includes scroll scaffolding, add scroll-only css
+    if (!wants3D) {
+      injections.push(`/* ---- artisan scroll storytelling ---- */
+.scroll-pin { position: relative; }
+.scroll-pin__sticky { position: sticky; top: 0; height: 100vh; display: grid; place-items: center; overflow: hidden; }
+.parallax { will-change: transform; }
+.horizontal { display: flex; gap: var(--space-6); will-change: transform; }
+@media (prefers-reduced-motion: reduce) { .parallax { transform: none !important; } }`);
+      notes.push('scroll storytelling layer injected (pin + parallax)');
+    }
   }
 
   let updated = source;
+  // Premium HTML scaffolding — inject CDN, canvas + orbs, scroll pin
+  const needsCdn = (wants3D || wantsScroll) && wantsPremium && !updated.includes('gsap.min.js');
+  if (needsCdn) {
+    const cdnThree = wants3D ? `<script type="importmap">{"imports":{"three":"https://unpkg.com/three@0.160.0/build/three.module.js","three/addons/":"https://unpkg.com/three@0.160.0/examples/jsm/"}}</` + `script>\n` : '';
+    updated = updated.replace('</head>', `${cdnThree}<script src="https://cdn.jsdelivr.net/npm/gsap@3.12.5/dist/gsap.min.js"></` + `script>\n<script src="https://cdn.jsdelivr.net/npm/gsap@3.12.5/dist/ScrollTrigger.min.js"></` + `script>\n</head>`);
+    notes.push('CDN imports injected (GSAP' + (wants3D ? ' + Three' : '') + ')');
+  }
+  if (wantsPremium && wants3D && !updated.includes('hero-webgl')) {
+    if (updated.includes('class="hero')) {
+      updated = updated.replace(/class="hero([^"]*)"/, 'class="hero hero--premium$1" data-hero-premium');
+      if (!updated.includes('data-hero-canvas')) {
+        updated = updated.replace(/(<section[^>]*class="hero[^>]*>)/, `$1\n      <div class="hero-webgl" aria-hidden="true">\n        <canvas id="hero-webgl" data-hero-canvas></canvas>\n        <div class="hero__orb hero__orb--1 parallax" data-parallax data-speed="0.12"></div>\n        <div class="hero__orb hero__orb--2 parallax" data-parallax data-speed="0.06"></div>\n        <div class="hero__orb hero__orb--3 parallax" data-parallax data-speed="0.09"></div>\n      </div>`);
+        notes.push('hero WebGL canvas injected');
+      }
+    }
+  }
+  if (wantsPremium && wantsScroll && !updated.includes('data-scroll-pin') && updated.includes('class="section')) {
+    updated = updated.replace(/(<section[^>]*class="section[^>]*>)/, `$1`.replace(/<section/, '<section data-scroll-pin'));
+    let count = 0;
+    updated = updated.replace(/<section([^>]*class="section[^>]*>)/g, (m, attrs) => {
+      count += 1;
+      if (count === 2 && !m.includes('data-scroll-pin')) return `<section${attrs} data-scroll-pin><div data-pin>`;
+      return m;
+    });
+    notes.push('scroll pin scaffolding injected');
+  }
+
   if (injections.length) {
     const styleMatch = updated.match(/<style>([\s\S]*?)<\/style>/);
     if (styleMatch) {
@@ -166,11 +255,21 @@ async function enhanceExistingFile({ existingRel, taskType, tokens, direction, t
       updated = updated.replace(/<\/head>/, `<style>\n${injections.join('\n')}\n</style>\n</head>`);
     }
     // Ensure the interactive layer exists for motion reveals.
-    if (!updated.includes('IntersectionObserver') && (taskType === 'motion' || taskType === 'enhance')) {
+    if (!updated.includes('IntersectionObserver') && (taskType === 'motion' || taskType === 'enhance' || wantsScroll)) {
       const close = '</' + 'script>';
       const js = `<script>\n(() => {\n  const reduce = window.matchMedia('(prefers-reduced-motion: reduce)').matches;\n  if (reduce || !('IntersectionObserver' in window)) { document.querySelectorAll('[data-reveal]').forEach((el) => el.classList.add('enter')); return; }\n  const io = new IntersectionObserver((entries) => entries.forEach((en) => {\n    if (en.isIntersecting) { en.target.classList.add('enter'); io.unobserve(en.target); }\n  }), { threshold: 0.12 });\n  document.querySelectorAll('[data-reveal]').forEach((el) => io.observe(el));\n})();\n${close}`;
       updated = updated.replace(/<\/body>/, `${js}\n</body>`);
       notes.push('reveal runtime injected');
+    }
+    // Premium 3D + scroll JS — single injection, respects reduced-motion and mobile
+    if ((wants3D || wantsScroll) && wantsPremium && !updated.includes('hero-webgl') && !updated.includes('ScrollTrigger')) {
+      // This case shouldn't happen as we already handled hero-webgl above, but fallback for JS-only
+    }
+    if (wantsPremium && (wants3D || wantsScroll) && !updated.includes('premium scroll + 3D')) {
+      const close2 = '</' + 'script>';
+      const premiumJs = `<script>\n/* premium scroll + 3D — progressive enhancement */\n(() => {\n  try {\n    const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;\n    const isCoarse = window.matchMedia("(pointer: coarse)").matches;\n    const prefersLow = window.matchMedia("(max-width: 768px)").matches;\n    if (!reduceMotion) {\n      const els = document.querySelectorAll("[data-parallax]");\n      const onParallax = () => { const sy = window.scrollY; els.forEach((el) => { const speed = parseFloat(el.dataset.speed || "0.08"); el.style.transform = "translate3d(0," + (sy * speed * -0.35) + "px,0)"; }); };\n      window.addEventListener("scroll", onParallax, { passive: true }); onParallax();\n    }\n    if (!reduceMotion && !isCoarse) {\n      const orbs = document.querySelectorAll(".hero__orb");\n      window.addEventListener("mousemove", (e) => {\n        const x = (e.clientX / window.innerWidth - 0.5) * 2;\n        const y = (e.clientY / window.innerHeight - 0.5) * 2;\n        orbs.forEach((orb, i) => { const f = (i + 1) * 6; orb.style.transform = "translate3d(" + (x * f) + "px," + (y * f * 0.6) + "px,0)"; });\n      }, { passive: true });\n    }\n    const hasGSAP = typeof window.gsap !== "undefined";\n    if (!reduceMotion && hasGSAP && window.ScrollTrigger) {\n      window.gsap.registerPlugin(window.ScrollTrigger);\n      document.querySelectorAll("[data-scroll-pin]").forEach((pin) => {\n        const tl = window.gsap.timeline({ scrollTrigger: { trigger: pin, pin: pin.querySelector("[data-pin]") || pin, scrub: 1, start: "top top", end: "+=120%", anticipatePin: 1 } });\n        const steps = pin.querySelectorAll("[data-step]");\n        steps.forEach((step, i) => { tl.fromTo(step, { opacity: 0.35, y: 12 }, { opacity: 1, y: 0, duration: 0.4 }, i * 0.25); tl.to(step, { opacity: 0.35, duration: 0.2 }, i * 0.25 + 0.35); });\n      });\n      document.querySelectorAll("[data-horizontal]").forEach((wrap) => {\n        const track = wrap.querySelector("[data-horizontal-track]");\n        if (!track) return;\n        const len = track.children.length;\n        window.gsap.to(track, { xPercent: -100 * (len - 1), ease: "none", scrollTrigger: { trigger: wrap, pin: true, scrub: 1, end: "+=" + (len * 100) + "%" } });\n      });\n    }\n    const canvas = document.querySelector("[data-hero-canvas]");\n    if (canvas && !reduceMotion && !isCoarse && !prefersLow) {\n      import("three").then((THREE) => {\n        const scene = new THREE.Scene();\n        const camera = new THREE.PerspectiveCamera(44, canvas.clientWidth / canvas.clientHeight, 0.1, 100);\n        camera.position.set(0, 0.2, 6);\n        const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: true, powerPreference: "high-performance" });\n        renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.8));\n        renderer.setSize(canvas.clientWidth, canvas.clientHeight, false);\n        renderer.toneMapping = THREE.ACESFilmicToneMapping;\n        scene.add(new THREE.AmbientLight(0xffffff, 0.7));\n        const dir = new THREE.DirectionalLight(0xffffff, 1.2); dir.position.set(2, 3, 4); scene.add(dir);\n        const geo = new THREE.IcosahedronGeometry(0.9, 1);\n        const m1 = new THREE.Mesh(geo, new THREE.MeshStandardMaterial({ color: 0x7c5cff, roughness: 0.35, metalness: 0.15, transparent: true, opacity: 0.95 })); m1.position.set(-1.6, 0.4, 0);\n        const m2 = new THREE.Mesh(new THREE.IcosahedronGeometry(0.6, 1), new THREE.MeshStandardMaterial({ color: 0x4f46e5, roughness: 0.5, metalness: 0.1, transparent: true, opacity: 0.75 })); m2.position.set(1.4, -0.2, -0.5);\n        const m3 = new THREE.Mesh(new THREE.IcosahedronGeometry(0.45, 1), new THREE.MeshStandardMaterial({ color: 0x06b6d4, roughness: 0.4, metalness: 0.2, transparent: true, opacity: 0.65 })); m3.position.set(0.6, 0.9, -0.8);\n        scene.add(m1, m2, m3);\n        const onResize = () => { const w = canvas.clientWidth, h = canvas.clientHeight; camera.aspect = w / h; camera.updateProjectionMatrix(); renderer.setSize(w, h, false); };\n        window.addEventListener("resize", onResize, { passive: true });\n        let mx = 0, my = 0, sx = 0;\n        window.addEventListener("mousemove", (e) => { mx = (e.clientX / window.innerWidth - 0.5) * 0.6; my = (e.clientY / window.innerHeight - 0.5) * 0.4; }, { passive: true });\n        window.addEventListener("scroll", () => { sx = window.scrollY / 1200; }, { passive: true });\n        let raf = 0; const tick = () => { raf = requestAnimationFrame(tick); m1.rotation.y += 0.003 + mx * 0.002; m1.rotation.x += 0.0015 + my * 0.001; m2.rotation.y -= 0.004 + mx * 0.0015; m2.rotation.z += 0.002; m3.rotation.y += 0.005; m3.rotation.x -= 0.002 + my * 0.001; camera.position.x += (mx * 0.9 - camera.position.x) * 0.04; camera.position.y += (-my * 0.5 - camera.position.y + 0.2) * 0.04; camera.lookAt(0, 0, 0); m1.position.y = 0.4 + Math.sin(Date.now() * 0.0004) * 0.12; scene.rotation.y = sx * 0.18; renderer.render(scene, camera); }; tick();\n        document.addEventListener("visibilitychange", () => { if (document.hidden) cancelAnimationFrame(raf); else tick(); });\n      }).catch(() => {});\n    } else if (canvas) { canvas.style.display = "none"; }\n  } catch (e) {}\n})();\n${close2}`;
+      updated = updated.replace(/<\/body>/, `${premiumJs}\n</body>`);
+      notes.push('premium 3D + scroll JS injected (GSAP + Three.js, mouse + scroll, reduced-motion guard)');
     }
     notes.push(`enhancement applied to ${existingRel} (markup preserved)`);
   } else {

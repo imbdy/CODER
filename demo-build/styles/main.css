@@ -1,22 +1,95 @@
-/**
- * CSS emitter — hand-written, tokenised stylesheet blocks.
- *
- * This is where design decisions become durable code: every rule references the token
- * variables, every interactive element carries its full state story (hover, focus,
- * active, disabled, loading), and responsive behaviour is authored per section rather
- * than left to a global shrink.
- */
-
-import { tokensToCssVariables } from './css-vars.mjs';
-
-export function emitBaseCss(tokens, { direction } = {}) {
-  return `/* =============================================================
-   ${direction?.name ?? 'Artisan'} — base layer
+/* Aurora Depth — external build | 2026-09-16 */
+/* =============================================================
+   Aurora Depth — base layer
    Generated from design tokens. Change values in .forge/config.json
    or in the :root block below, never by editing rules ad hoc.
    ============================================================= */
 
-${tokensToCssVariables(tokens)}
+:root {
+  /* palette */
+  --color-bg: #0d1014;
+  --color-surface: #141821;
+  --color-surface-alt: #191e29;
+  --color-text: #eef2f7;
+  --color-text-muted: #909398;
+  --color-text-faint: #63666a;
+  --color-accent: #7c5cff;
+  --color-accent-hover: #9d85ff;
+  --color-accent-quiet: #3b11e4;
+  --color-accent-soft: rgb(124 92 255 / 0.16);
+  --color-accent-readable: #7c5cff;
+  --color-on-accent: #0b0b0c;
+  --color-border: rgb(255 255 255 / 0.1);
+  --color-border-strong: rgb(255 255 255 / 0.2);
+
+  /* type */
+  --font-sans: "Inter", system-ui, sans-serif;
+  --font-display: "Sora", "Inter", system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, monospace;
+  --text-xs: 0.63rem;
+  --text-sm: 0.794rem;
+  --text-base: 1rem;
+  --text-lg: 1.26rem;
+  --text-xl: 1.588rem;
+  --text-2xl: clamp(1.68rem, 1.81rem + 0.40vw, 2rem);
+  --text-3xl: clamp(2.117rem, 2.28rem + 0.50vw, 2.52rem);
+  --text-4xl: clamp(2.668rem, 2.87rem + 0.64vw, 3.176rem);
+  --text-5xl: clamp(3.362rem, 3.62rem + 0.80vw, 4.002rem);
+  --weight-regular: 400;
+  --weight-medium: 500;
+  --weight-semibold: 600;
+  --weight-bold: 700;
+  --tracking-display: -0.025em;
+  --tracking-heading: -0.01em;
+  --tracking-body: 0;
+  --tracking-caps: 0.08em;
+
+  /* space + shape */
+  --space-0: 0;
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-6: 24px;
+  --space-8: 32px;
+  --space-12: 48px;
+  --space-16: 64px;
+  --space-24: 96px;
+  --space-32: 128px;
+  --space-section: 96px;
+  --space-sectionLg: 160px;
+  --space-gutter: 20px;
+  --radius-sm: 6px;
+  --radius-md: 10px;
+  --radius-lg: 16px;
+  --radius-xl: 24px;
+  --radius-pill: 999px;
+  --shadow-xs: 0 1px 2px rgb(0 0 0 / 0.4);
+  --shadow-sm: 0 2px 8px rgb(0 0 0 / 0.45);
+  --shadow-md: 0 10px 30px rgb(0 0 0 / 0.5);
+  --shadow-lg: 0 24px 60px rgb(0 0 0 / 0.55);
+  --shadow-accentGlow: 0 12px 40px rgb(124 92 255 / 0.28);
+  --shadow-inset: inset 0 1px 0 rgb(255 255 255 / 0.06);
+
+  /* motion */
+  --duration-instant: 90ms;
+  --duration-fast: 160ms;
+  --duration-base: 240ms;
+  --duration-slow: 520ms;
+  --duration-cinematic: 900ms;
+  --ease-standard: cubic-bezier(0.2, 0.7, 0.2, 1);
+  --ease-emphasized: cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-entrance: cubic-bezier(0.22, 1, 0.36, 1);
+  --ease-exit: cubic-bezier(0.4, 0, 1, 1);
+  --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
+  --stagger: 70ms;
+  --motion-distance: 12px;
+  --motion-lift: 2px;
+
+  /* layout */
+  --max-width: 72rem;
+  --prose-width: 62ch;
+}
 
 *,
 *::before,
@@ -134,11 +207,8 @@ button, input, select, textarea { font: inherit; color: inherit; }
   z-index: 100;
 }
 .skip-link:focus { transform: translateY(0); }
-`;
-}
-/** Buttons, inputs, tags — the primitives every section reuses. */
-export function emitControlsCss() {
-  return `
+
+
 /* ------------------------------------------------------------- controls ---- */
 
 .btn {
@@ -266,11 +336,8 @@ export function emitControlsCss() {
 }
 
 @keyframes artisan-spin { to { transform: rotate(360deg); } }
-`;
-}
-/** Navigation + hero (all layout variants). */
-export function emitNavHeroCss() {
-  return `
+
+
 /* ------------------------------------------------------------------ nav ---- */
 
 .nav {
@@ -427,11 +494,8 @@ export function emitNavHeroCss() {
   background-size: 28px 28px;
   opacity: 0.45;
 }
-`;
-}
-/** Proof, metrics, features, showcase, process. */
-export function emitContentCss() {
-  return `
+
+
 /* ---------------------------------------------------------------- proof ---- */
 
 .proof { padding-block: var(--space-12); border-block: 1px solid var(--color-border); }
@@ -560,11 +624,8 @@ export function emitContentCss() {
   font-size: var(--text-xs);
   color: var(--color-text-faint);
 }
-`;
-}
-/** Pricing, testimonials, FAQ, CTA band, footer. */
-export function emitCommerceCss() {
-  return `
+
+
 /* ------------------------------------------------------------- pricing ---- */
 
 .pricing__grid { display: grid; gap: var(--space-6); grid-template-columns: repeat(auto-fit, minmax(min(100%, 17rem), 1fr)); align-items: start; }
@@ -667,61 +728,61 @@ export function emitCommerceCss() {
 .footer__links a { color: var(--color-text-muted); text-decoration: none; }
 .footer__links a:hover { color: var(--color-text); text-decoration: underline; }
 .footer__note { margin-top: var(--space-10); font-size: var(--text-xs); color: var(--color-text-faint); }
-`;
-}
-/** Auth form section. */
-export function emitAuthCss() {
-  return `
-/* ---------------------------------------------------------------- auth ---- */
 
-.auth { min-height: 100svh; display: grid; place-items: center; padding: var(--space-8) var(--space-6); }
 
-.auth__inner { width: 100%; max-width: 30rem; }
+/* ---------------------------------------------------------- premium 3D + scroll ---- */
 
-.auth__card {
-  padding: var(--space-10);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-xl);
-  background: var(--color-surface);
-  box-shadow: var(--shadow-lg);
+.hero--premium { position: relative; overflow: clip; }
+.hero-webgl {
+  position: absolute;
+  inset: 0;
+  width: 100%; height: 100%;
+  z-index: 0;
+  pointer-events: none;
+  opacity: 0.95;
+}
+.hero-webgl canvas { width: 100% !important; height: 100% !important; display: block; }
+.hero--premium .container { position: relative; z-index: 1; }
+.hero__orb {
+  position: absolute;
+  border-radius: 50%;
+  background: radial-gradient(circle at 30% 30%, var(--color-accent), transparent 70%);
+  filter: blur(18px);
+  opacity: 0.55;
+  pointer-events: none;
+}
+.hero__orb--1 { width: 420px; height: 420px; top: -8%; right: -6%; }
+.hero__orb--2 { width: 300px; height: 300px; bottom: 10%; left: 6%; opacity: 0.35; }
+.hero__orb--3 { width: 180px; height: 180px; top: 42%; right: 22%; opacity: 0.4; }
+
+.scroll-pin { position: relative; }
+.scroll-pin__sticky {
+  position: sticky;
+  top: 0;
+  height: 100vh;
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+}
+.scroll-reveal { will-change: transform, opacity; }
+.parallax { will-change: transform; }
+.horizontal { display: flex; gap: var(--space-6); will-change: transform; }
+.glass {
+  background: color-mix(in oklab, var(--color-surface) 72%, transparent);
+  backdrop-filter: blur(16px) saturate(1.2);
+  border: 1px solid color-mix(in oklab, var(--color-border) 70%, transparent);
 }
 
-.auth__title { font-size: var(--text-3xl); letter-spacing: var(--tracking-display); }
-.auth__sub { color: var(--color-text-muted); margin-top: var(--space-3); }
-.auth__form { display: flex; flex-direction: column; gap: var(--space-5); margin-top: var(--space-8); }
-.auth__divider {
-  display: flex;
-  align-items: center;
-  gap: var(--space-4);
-  color: var(--color-text-faint);
-  font-size: var(--text-xs);
-  text-transform: uppercase;
-  letter-spacing: var(--tracking-caps);
+@media (max-width: 60rem) {
+  .hero-webgl { opacity: 0.6; }
+  .scroll-pin__sticky { height: auto; position: relative; }
 }
-.auth__divider::before, .auth__divider::after { content: ''; flex: 1; height: 1px; background: var(--color-border); }
-.auth__foot { margin-top: var(--space-6); font-size: var(--text-sm); color: var(--color-text-muted); }
-.auth__brand { font-family: var(--font-display); font-size: var(--text-lg); margin-bottom: var(--space-8); display: block; text-decoration: none; }
-
-.auth__aside {
-  display: none;
-  padding: var(--space-12);
-  border-left: 1px solid var(--color-border);
-  background: color-mix(in oklab, var(--color-surface) 70%, var(--color-bg));
-  flex-direction: column;
-  justify-content: center;
-  gap: var(--space-4);
+@media (prefers-reduced-motion: reduce) {
+  .hero-webgl { display: none !important; }
+  .parallax { transform: none !important; }
 }
 
-@media (min-width: 64rem) {
-  .auth--split { grid-template-columns: 1fr 1fr; place-items: stretch; }
-  .auth--split .auth__aside { display: flex; }
-  .auth--split .auth__inner { max-width: 26rem; }
-}
-`;
-}
-/** Motion layer + responsive rules + reduced-motion escape hatch. */
-export function emitMotionCss() {
-  return `
+
 /* ---------------------------------------------------------------- motion ---- */
 
 [data-reveal] {
@@ -821,111 +882,4 @@ export function emitMotionCss() {
   }
   [data-reveal] { opacity: 1 !important; transform: none !important; }
   .float, .enter { animation: none !important; }
-}
-`;
-}
-/** Premium 3D + scroll storytelling layer — only when requested, but high leverage. */
-export function emitPremium3DScrollCss() {
-  return `
-/* ---------------------------------------------------------- premium 3D + scroll ---- */
-
-.hero--premium { position: relative; overflow: clip; }
-.hero-webgl {
-  position: absolute;
-  inset: 0;
-  width: 100%; height: 100%;
-  z-index: 0;
-  pointer-events: none;
-  opacity: 0.95;
-}
-.hero-webgl canvas { width: 100% !important; height: 100% !important; display: block; }
-.hero--premium .container { position: relative; z-index: 1; }
-.hero__orb {
-  position: absolute;
-  border-radius: 50%;
-  background: radial-gradient(circle at 30% 30%, var(--color-accent), transparent 70%);
-  filter: blur(18px);
-  opacity: 0.55;
-  pointer-events: none;
-}
-.hero__orb--1 { width: 420px; height: 420px; top: -8%; right: -6%; }
-.hero__orb--2 { width: 300px; height: 300px; bottom: 10%; left: 6%; opacity: 0.35; }
-.hero__orb--3 { width: 180px; height: 180px; top: 42%; right: 22%; opacity: 0.4; }
-
-.scroll-pin { position: relative; }
-.scroll-pin__sticky {
-  position: sticky;
-  top: 0;
-  height: 100vh;
-  display: grid;
-  place-items: center;
-  overflow: hidden;
-}
-.scroll-reveal { will-change: transform, opacity; }
-.parallax { will-change: transform; }
-.horizontal { display: flex; gap: var(--space-6); will-change: transform; }
-.glass {
-  background: color-mix(in oklab, var(--color-surface) 72%, transparent);
-  backdrop-filter: blur(16px) saturate(1.2);
-  border: 1px solid color-mix(in oklab, var(--color-border) 70%, transparent);
-}
-
-@media (max-width: 60rem) {
-  .hero-webgl { opacity: 0.6; }
-  .scroll-pin__sticky { height: auto; position: relative; }
-}
-@media (prefers-reduced-motion: reduce) {
-  .hero-webgl { display: none !important; }
-  .parallax { transform: none !important; }
-}
-`;
-}
-
-/** Compose the complete stylesheet for a page plan. */
-export function emitSiteCss(tokens, { direction, plan, request = '' } = {}) {
-  const types = new Set((plan?.sections ?? []).map((section) => section.type));
-  const needs3DScroll = isPremiumRequest(request, direction);
-  const parts = [emitBaseCss(tokens, { direction }), emitControlsCss()];
-  if (types.has('demo')) parts.push(emitDemoCss());
-  if (types.has('nav') || types.has('hero')) parts.push(emitNavHeroCss());
-  if (['proof', 'stats', 'features', 'showcase', 'process'].some((type) => types.has(type))) parts.push(emitContentCss());
-  if (['pricing', 'testimonials', 'faq', 'cta', 'footer'].some((type) => types.has(type))) parts.push(emitCommerceCss());
-  if (types.has('form')) parts.push(emitAuthCss());
-  if (needs3DScroll) parts.push(emitPremium3DScrollCss());
-  parts.push(emitMotionCss());
-  return parts.join('\n');
-}
-
-function isPremiumRequest(request = '', direction) {
-  const hay = String(request).toLowerCase();
-  if (direction?.id === 'aurora-depth') return true;
-  return /\b(3d|three\.?js|webgl|depth|immersive|scroll|pin|scrub|parallax|horizontal|gsap|cinematic|storytelling|glassmorphism)\b/i.test(hay);
-}
-/** Component-demo stage: the component shown in every state, on a real stage. */
-export function emitDemoCss() {
-  return `
-/* ---------------------------------------------------------------- demo ---- */
-
-.demo { min-height: 100svh; display: grid; place-items: center; padding: var(--space-10) var(--space-6); }
-.demo__inner { width: 100%; max-width: 56rem; }
-.demo__title { font-size: var(--text-3xl); letter-spacing: var(--tracking-display); }
-.demo__sub { color: var(--color-text-muted); margin-top: var(--space-3); max-width: 52ch; }
-
-.demo__stage {
-  margin-top: var(--space-8);
-  padding: var(--space-12) var(--space-8);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-xl);
-  background:
-    radial-gradient(80% 120% at 50% 0%, var(--color-accent-soft), transparent 60%),
-    var(--color-surface);
-  display: flex; flex-wrap: wrap; gap: var(--space-6); align-items: center; justify-content: center;
-}
-.demo__cell { display: flex; flex-direction: column; align-items: center; gap: var(--space-3); }
-.demo__label { font-family: var(--font-mono); font-size: var(--text-xs); letter-spacing: var(--tracking-caps); text-transform: uppercase; color: var(--color-text-faint); }
-.demo__note { margin-top: var(--space-6); font-size: var(--text-sm); color: var(--color-text-faint); }
-.demo--card .demo__stage { display: grid; gap: var(--space-8); grid-template-columns: repeat(auto-fit, minmax(14rem, 1fr)); justify-items: stretch; }
-.demo--card .demo__cell { align-items: stretch; }
-.demo--input .demo__stage, .demo--toggle .demo__stage { display: grid; gap: var(--space-8); max-width: 26rem; margin-inline: auto; }
-`;
 }

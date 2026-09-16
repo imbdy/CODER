@@ -19,6 +19,13 @@ export function classifyTaskType(request = '') {
   const t = text.toLowerCase();
   const creating = CREATE_VERB.test(t);
 
+  // 0. Page creation with explicit build intent takes precedence over generic capability asks.
+  // This ensures "Build a landing page with subtle motion and 3D" is treated as a page build,
+  // not as a standalone motion/3d/responsive task, while "Add subtle motion" (no page, no build verb) stays as motion.
+  if (creating && /\b(landing|marketing site|homepage|home page|website|web ?site|site|page|screen|login|log in|sign in|sign up|auth)\b/i.test(t)) {
+    return 'create-page';
+  }
+
   // 1. Explicit capability asks ("add subtle motion", "make it responsive").
   if (/\bresponsive|mobile[- ]friendly|works? on mobile|tablet\b/i.test(t)) return 'responsive';
   if (/\b3d\b|three\.?js|webgl|floating 3d|parallax depth|immersive depth/i.test(t)) return '3d';

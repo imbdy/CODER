@@ -1,0 +1,60 @@
+{
+  "version": 1,
+  "createdAt": "2026-09-16T14:29:31.446Z",
+  "updatedAt": "2026-09-16T14:29:31.446Z",
+  "runs": [
+    {
+      "id": "run_7cd058e0",
+      "request": "Build a premium immersive landing page for a futuristic AI studio called NEON with cinematic hero featuring floating 3D orbs with mouse parallax, scroll-driven storytelling with pinned sections, parallax depth, horizontal scroll gallery, subtle motion, glassmorphism, and responsive design",
+      "taskType": "create-page",
+      "at": "2026-09-16T14:29:31.445Z",
+      "status": "done",
+      "score": 90,
+      "skills": [
+        "anti-slop",
+        "frontend-master",
+        "visual-design",
+        "layout",
+        "responsive-design",
+        "gsap",
+        "animation-principles"
+      ],
+      "files": [
+        "index.html"
+      ],
+      "direction": "Aurora Depth"
+    }
+  ],
+  "designLanguage": {
+    "direction": "Aurora Depth",
+    "tokens": {
+      "accent": "#7c5cff",
+      "theme": "dark",
+      "direction": "aurora-depth"
+    },
+    "updatedAt": "2026-09-16T14:29:31.445Z"
+  },
+  "decisions": [
+    {
+      "kind": "direction",
+      "choice": "aurora-depth",
+      "why": "heuristic",
+      "runId": "run_7cd058e0"
+    }
+  ],
+  "registry": {
+    "created": [
+      "index.html"
+    ],
+    "modified": []
+  },
+  "history": [
+    {
+      "id": "run_7cd058e0",
+      "request": "Build a premium immersive landing page for a futuristic AI studio called NEON with cinematic hero featuring floating 3D orbs with mouse parallax, scroll-driven storytelling with pinned sections, parallax depth, horizontal scroll gallery, subtle motion, glassmorphism, and responsive design",
+      "at": "2026-09-16T14:29:31.445Z",
+      "status": "done",
+      "score": 90
+    }
+  ]
+}

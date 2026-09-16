@@ -15,6 +15,7 @@
   },
   "scripts": {
     "artisan": "node ./bin/artisan.mjs",
+    "chat": "node ./bin/artisan.mjs chat",
     "test": "node --test tests/unit/*.test.mjs",
     "test:all": "node --test tests/unit/*.test.mjs tests/e2e/*.test.mjs",
     "e2e": "node ./scripts/e2e.mjs",

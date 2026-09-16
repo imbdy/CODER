@@ -7,7 +7,9 @@ export function printHelp() {
   console.log('Usage:');
   console.log('  artisan "Build me a premium login screen" --workspace ./demo --brain deterministic');
   console.log('  artisan --demo red-button|login|landing --workspace ./demo');
+  console.log('  artisan chat --workspace ./demo        (interactive REPL)');
   console.log('  artisan doctor');
   console.log('  artisan skills');
-  console.log('\nFlags: --workspace, --brain, --verbose, --dry-run, --json, --no-write, --max-iters');
+  console.log('\nFlags: --workspace, --brain, --verbose, --dry-run, --json, --no-write, --max-iters, --chat');
+  console.log('\nChat commands: /help /status /todo /skills /clear /exit');
 }
