@@ -1,3 +1,5 @@
+> **Superseded (2026-09-17):** this review describes an earlier architecture. The current runtime (one conversational agent, runtime-owned execution gate, structured agreed context, model-selected skills, headless-browser visual QA with iteration, testing gates) is documented in [ARCHITECTURE.md](ARCHITECTURE.md).
+
 # Qwen2.5-7B-Coder — Frontend Agent Setup (Ollama)
 
 ## 1. Model / Runtime Setup + Tool-Call Validation

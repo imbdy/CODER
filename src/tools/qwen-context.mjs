@@ -19,6 +19,8 @@ export const QWEN_TOOL_SPECS = [
   { name: 'run_bash', description: 'Run shell command. Args: {"command": "npm", "args": ["run","build"]}', args: { command: 'Command', args: 'Array of args' } },
   { name: 'list_skills', description: 'Discover available design skills. Args: {} — returns [{id, category, description}]', args: {} },
   { name: 'read_skill', description: 'Read full expert guidance for one skill. Args: {"id": "motion"} — returns markdown body', args: { id: 'Skill id' } },
+  { name: 'update_todo', description: 'Progress a structured TODO. Args: {"id": "I1", "status": "in_progress|completed|blocked", "note": "optional"}', args: { id: 'todo id', status: 'status' } },
+  { name: 'run_qa', description: 'Render the page in a headless browser and critique it now. Args: {}', args: {} },
 ];
 
 // Alias map so we can still handle legacy calls if model emits old names
@@ -35,6 +37,11 @@ const ALIASES = {
   run_bash: 'run_bash',
   list_skills: 'list_skills',
   read_skill: 'read_skill',
+  update_todo: 'update_todo',
+  updateTodo: 'update_todo',
+  run_qa: 'run_qa',
+  runQa: 'run_qa',
+  visual_qa: 'run_qa',
   // legacy internal names
   readSkill: 'read_skill',
   listSkills: 'list_skills',
@@ -60,6 +67,7 @@ export function validateToolCall(entry) {
   if (tool === 'edit_file' && !args.edits && !args.patches) return { ok: false, error: 'edit_file requires {"edits": [{"oldText":"...","newText":"..."}]}' };
   if (tool === 'run_bash' && !args.command && !args.cmd) return { ok: false, error: 'run_bash requires {"command": "..."}' };
   if (tool === 'read_skill' && !args.id && !args.skill && !args.name) return { ok: false, error: 'read_skill requires {"id": "..."}' };
+  if (tool === 'update_todo' && (!args.id || !args.status)) return { ok: false, error: 'update_todo requires {"id": "I1", "status": "in_progress|completed|blocked"}' };
   return { ok: true, tool, args };
 }
 

@@ -1,147 +1,269 @@
-/** Agreed design context — compact persistent decisions shared by
- * discussion AND execution. Concise decisions only, no chain-of-thought.
- * This is what lets "Perfect. Build it." implement everything agreed above,
- * not just the last message. */
+/**
+ * Agreed design context — the durable, compact record of what the user and the
+ * agent have decided. It is the ONLY thing that flows from discussion into
+ * execution: spec, skill selection, TODOs, implementation, visual QA and
+ * follow-up refinements all read from it.
+ *
+ * Two writers:
+ *   - the conversation model returns a structured patch every turn (mergeContextPatch)
+ *   - offline, a deterministic extractor folds the user's words in (extractContextHeuristically)
+ * Both produce the same schema, so execution never cares which one ran.
+ */
+
+const STRING_FIELDS = ['project', 'product', 'audience', 'purpose', 'composition', 'typography', 'color', 'layout', 'hero', 'interaction', 'motion', 'depth3d', 'summary'];
+const LIST_FIELDS = ['visualDirection', 'tech', 'accepted', 'rejected', 'constraints', 'notes', 'changeRequests'];
+const LIST_CAP = 14;
+
 export function createAgreedContext() {
   return {
-    product: '',
-    purpose: '',
+    version: 2,
+    project: '', product: '', audience: '', purpose: '',
     visualDirection: [],
-    acceptedIdeas: [],
-    rejectedIdeas: [],
-    typography: [],
-    color: [],
-    motion: [],
-    depth3d: [],
-    layout: [],
-    constraints: [],
-    decisions: [], // [{ text, at }] newest last, capped
-    lastSpecSummary: '',
+    composition: '', typography: '', color: '', layout: '', hero: '', interaction: '', motion: '', depth3d: '',
+    tech: [],
+    accepted: [], rejected: [], constraints: [], notes: [],
+    changeRequests: [],
+    summary: '',
+    build: null,
+    decisions: [],
     updatedAt: undefined,
   };
 }
 
-const REJECT_RE = /\b(don'?t like|remove|drop|no orb|not .*orb|less |reject|avoid|hate|too much)\b/i;
-const ACCEPT_RE = /\b(yes|yeah|like that|love|perfect|good|great|keep|use that|let'?s do)\b/i;
-// Session-meta ("hi", "what workspace…?", "status") carries no design signal
-// and must not become purpose/product/visuals. Recorded, never extracted.
-const META_RE = /^(hi|hiya|hello|hey|yo|salam|marhaba|thanks|thank you|thx|help|what can you do\??|commands\??)\b|\bworkspace\b|\bdirector(y|ies)\b|where (are|r) (you|u) (working|building)|(^|\b)(\/status|status)\b|what (have|did) you (done|built|changed|made)|progress so far/i;
-// Local build-trigger guard (agreed-context must stay dependency-free:
-// interactive.mjs owns the full isBuildTrigger, this is just enough to avoid
-// treating "Build it" as an accepted design idea).
-const BUILD_TRIGGER_SHORT_RE = /^(build it|go ahead|start|make it|do it|build this|implement it|please build|ok build it|yes build it|let'?s do it|ship it|okay,?\s*implement it|let'?s build)\.?$/i;
-function isShortBuildTrigger(text) {
-  const raw = String(text ?? '').trim().toLowerCase();
-  return raw.length < 40 && BUILD_TRIGGER_SHORT_RE.test(raw);
+/** Upgrade older shapes (v1 lists for typography/color/motion/…) into v2. */
+export function normalizeAgreedContext(ctx) {
+  const c = { ...createAgreedContext(), ...(ctx ?? {}) };
+  for (const key of STRING_FIELDS) if (Array.isArray(c[key])) c[key] = c[key].filter(Boolean).join('; ').slice(0, 240);
+  if (Array.isArray(ctx?.acceptedIdeas)) c.accepted = uniq([...(c.accepted ?? []), ...ctx.acceptedIdeas]);
+  if (Array.isArray(ctx?.rejectedIdeas)) c.rejected = uniq([...(c.rejected ?? []), ...ctx.rejectedIdeas]);
+  for (const key of LIST_FIELDS) c[key] = uniq((c[key] ?? []).map(clean)).slice(-LIST_CAP);
+  c.version = 2;
+  return c;
 }
 
-/** Fold one discussion turn into the agreed context (deterministic, cheap). */
-export function updateAgreedContext(ctx, raw) {
-  const c = ctx ?? createAgreedContext();
-  const text = String(raw ?? '').trim();
-  if (!text) return c;
-  const lower = text.toLowerCase();
-  // Session-meta is history, not design: record it and extract nothing.
-  if (META_RE.test(text)) {
-    c.decisions.push({ text: text.slice(0, 160), at: new Date().toISOString() });
-    if (c.decisions.length > 24) c.decisions = c.decisions.slice(-24);
-    c.updatedAt = new Date().toISOString();
-    return c;
+function clean(value) { return String(value ?? '').replace(/\s+/g, ' ').trim().slice(0, 160); }
+function uniq(list) {
+  const seen = new Set();
+  const out = [];
+  for (const item of list.map(clean).filter(Boolean)) {
+    const key = item.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(item);
   }
-  const push = (list, value) => {
-    const v = String(value ?? '').trim();
-    if (v && !list.includes(v)) list.push(v);
-  };
-  // Rejections are first-class: "I don't like the orb" must survive to build.
-  if (REJECT_RE.test(lower)) {
-    const m = text.match(/(?:don'?t like|remove|drop|reject|avoid|no)\s+(?:the\s+)?([^.,;!]{2,60})/i);
-    push(c.rejectedIdeas, (m?.[1] ?? text).trim().slice(0, 80));
+  return out;
+}
+function removeMatching(list, value) {
+  const needle = clean(value).toLowerCase();
+  if (!needle) return list;
+  return list.filter((item) => { const it = item.toLowerCase(); return !(it === needle || it.includes(needle) || needle.includes(it)); });
+}
+
+/** Merge a structured patch (from the model or the heuristic extractor). */
+export function mergeContextPatch(ctx, patch, { source = 'model', turnText } = {}) {
+  const c = normalizeAgreedContext(ctx);
+  const p = patch && typeof patch === 'object' ? patch : {};
+  for (const key of STRING_FIELDS) {
+    if (typeof p[key] === 'string' && clean(p[key])) c[key] = clean(p[key]).slice(0, 240);
   }
-  // Explicit don't-wants: "I don't want the hero to be overloaded."
-  {
-    const m = text.match(/(?:don'?t want|do not want)\s+([^.,;!]{2,70})/i);
-    if (m) {
-      const chunk = m[1].trim().slice(0, 80);
-      push(c.rejectedIdeas, chunk);
-      // Hero restraint is a layout constraint the spec must honor.
-      if (/\b(hero|title|headline)\b/i.test(chunk) && /(overload|crowd|busy|huge|oversized|too?\s*big|clutter|heavy|loaded)/i.test(chunk)) {
-        push(c.constraints, 'restrained hero');
-      }
-    }
+  for (const key of LIST_FIELDS) {
+    const raw = p[key];
+    const list = Array.isArray(raw) ? raw : (typeof raw === 'string' && raw.trim() ? [raw] : []);
+    if (!list.length) continue;
+    let merged = uniq([...c[key], ...list]);
+    if (key === 'rejected') for (const item of list) c.accepted = removeMatching(c.accepted, item);
+    if (key === 'accepted') for (const item of list) c.rejected = removeMatching(c.rejected, item);
+    c[key] = merged.slice(-LIST_CAP);
   }
-  // "Not the typical X" rejections: "not the typical purple AI SaaS look".
-  {
-    const m = text.match(/\bnot\s+(?:the\s+|another\s+)?(?:typical|usual|generic)\s+([^.,;!]{2,60})/i);
-    if (m) push(c.rejectedIdeas, m[1].trim().slice(0, 80));
+  if (p.clearChangeRequests === true) c.changeRequests = [];
+  if (turnText) {
+    c.decisions.push({ text: clean(turnText).slice(0, 160), at: new Date().toISOString(), source });
+    if (c.decisions.length > 30) c.decisions = c.decisions.slice(-30);
   }
-  // Focus declarations: "keep typography as the main focus".
-  {
-    const m = text.match(/\b(typography|type|hero|motion|performance|simplicity|content|imagery|color|colour|layout)\b[^.,;!]{0,30}\b(?:main\s+)?focus\b/i);
-    if (m) push(c.acceptedIdeas, `${m[1].toLowerCase()} as main focus`);
-  }
-  // Visual / feel cues
-  for (const w of ['cinematic', 'immersive', 'premium', 'futuristic', 'organic', 'minimal', 'editorial', 'playful', 'calm', 'dark', 'light', 'strong typography', 'typography', '3d', 'scroll', 'motion', 'parallax']) {
-    if (lower.includes(w)) push(c.visualDirection, w);
-  }
-  if (/\b(orb|glow|gradient|bento|glass|cards?)\b/i.test(text)) {
-    const m = text.match(/\b(orb|glow|gradient|bento|glass|cards?)\b[^.,;]{0,40}/i);
-    if (m) (REJECT_RE.test(lower) ? push(c.rejectedIdeas, m[0].trim()) : push(c.acceptedIdeas, m[0].trim()));
-  }
-  if (/\b(typograph|font|serif|tracking|headline|title)\b/i.test(text)) push(c.typography, text.slice(0, 120));
-  if (/\b(colo[u]?r|palette|dark|light|accent|blue|green|warm|neon)\b/i.test(text)) push(c.color, text.slice(0, 120));
-  if (/\b(motion|animat|scroll|transition|hover|parallax|scrub)\b/i.test(text)) push(c.motion, text.slice(0, 120));
-  if (/\b(3d|three|webgl|object|scene|depth|immersive|organic visual)\b/i.test(text)) push(c.depth3d, text.slice(0, 120));
-  if (/\b(hero|layout|section|nav|grid|composition)\b/i.test(text)) push(c.layout, text.slice(0, 120));
-  if (!c.product) {
-    const m = text.match(/for\s+(?:an?\s+|my\s+)?([^.,;!]{2,50})/i);
-    if (m && /tool|app|product|brand|site|page|startup/.test(m[1])) c.product = m[1].trim().slice(0, 60);
-  }
-  if (!c.purpose && text.length > 24 && !REJECT_RE.test(lower)) c.purpose = text.slice(0, 160);
-  if (ACCEPT_RE.test(lower) && text.length > 8 && text.length < 200 && !isShortBuildTrigger(text)) push(c.acceptedIdeas, text.slice(0, 120));
-  c.decisions.push({ text: text.slice(0, 160), at: new Date().toISOString() });
-  if (c.decisions.length > 24) c.decisions = c.decisions.slice(-24);
   c.updatedAt = new Date().toISOString();
   return c;
 }
 
-/** Render agreed context as a compact block for build requests + discussion prompts. */
-export function renderAgreedContext(c) {
-  if (!c) return '';
-  const parts = [];
-  if (c.product) parts.push(`product: ${c.product}`);
-  if (c.purpose) parts.push(`purpose: ${c.purpose}`);
-  if (c.visualDirection?.length) parts.push(`visual: ${c.visualDirection.join(', ')}`);
-  if (c.acceptedIdeas?.length) parts.push(`accepted: ${c.acceptedIdeas.slice(-6).join(' | ')}`);
-  if (c.rejectedIdeas?.length) parts.push(`REJECTED (must not build): ${c.rejectedIdeas.slice(-6).join(' | ')}`);
-  if (c.typography?.length) parts.push(`typography: ${c.typography.slice(-3).join(' | ')}`);
-  if (c.color?.length) parts.push(`color: ${c.color.slice(-3).join(' | ')}`);
-  if (c.motion?.length) parts.push(`motion: ${c.motion.slice(-3).join(' | ')}`);
-  if (c.depth3d?.length) parts.push(`3d: ${c.depth3d.slice(-3).join(' | ')}`);
-  if (c.layout?.length) parts.push(`layout: ${c.layout.slice(-3).join(' | ')}`);
-  if (c.constraints?.length) parts.push(`constraints: ${c.constraints.join(', ')}`);
-  return parts.join('\n');
+/* ---------------------------------------------------------- heuristic fold ---- */
+
+const META_RE = /^(hi|hiya|hello|hey|yo|salam|marhaba|thanks|thank you|thx|help|what can you do\??|commands\??|who are you\??|status)\b|\bworkspace\b|\bdirector(y|ies)\b|where (are|r) (you|u) (working|building)/i;
+const TRIGGER_RE = /^(ok(ay)?[,.! ]*)?(please[,. ]*)?(yes[,.! ]*)?(now[,. ]*)?(go( ahead)?( and)?[,. ]*)?(build|implement|make|do|ship|code|write|create|start( working| building)?|finish|execute|proceed|let'?s (build|do it|go|ship))( it| this| that| now| please| the (change|changes|update|updates|plan|design|site|page))?[.! ]*$/i;
+const VISUAL_WORDS = ['cinematic', 'immersive', 'premium', 'futuristic', 'organic', 'minimal', 'minimalist', 'editorial', 'playful', 'calm', 'dark', 'light', 'brutalist', 'luxury', 'elegant', 'bold', 'warm', 'cold', 'monochrome', 'retro', 'technical', 'clean', 'quiet', 'dramatic'];
+
+function objectPhrase(text) {
+  // "a landing page for an AI developer tool" → project + product
+  const m = text.match(/\b(landing page|home ?page|marketing site|website|web ?site|site|web app|app|dashboard|portfolio|login (?:page|screen)|sign-?up (?:page|flow)|checkout|pricing page|docs? site|blog|component library|hero section|hero|section|component|form|page)\b(?:\s+for\s+(?:an?\s+|my\s+|our\s+|the\s+)?([^.,;!?]{2,60}))?/i);
+  if (!m) return {};
+  const object = m[1].toLowerCase();
+  const product = m[2] ? clean(m[2]).replace(/^(called|named)\s+/i, '') : '';
+  return { project: product ? `${object} for ${product}` : object, product };
 }
 
-/** Merge the legacy designIntentObj into the agreed context (one-way, lossless). */
-export function agreedFromIntent(intentObj, ctx) {
-  const c = ctx ?? createAgreedContext();
-  const d = intentObj ?? {};
-  if (d.product && !c.product) c.product = d.product;
-  for (const v of d.visualDirection ?? []) if (!c.visualDirection.includes(v)) c.visualDirection.push(v);
-  if (d.motion && !c.motion.length) c.motion.push(`${d.motion} motion`);
-  if (d.depth === '3d' && !c.depth3d.length) c.depth3d.push(d.interaction ? `3d (${d.interaction})` : '3d');
-  if (d.depth === 'none' && !c.rejectedIdeas.some((x) => /3d/i.test(x))) c.rejectedIdeas.push('3d');
-  for (const f of d.features ?? []) if (!c.acceptedIdeas.some((x) => x.includes(f))) c.acceptedIdeas.push(f);
-  if (d.tone && !c.visualDirection.includes(d.tone)) c.visualDirection.push(d.tone);
-  if (d.responsive && !c.constraints.includes('responsive')) c.constraints.push('responsive');
-  for (const x of d.constraints ?? []) if (!c.constraints.includes(x)) c.constraints.push(x);
+/** Deterministic extraction for one user turn (offline fallback). */
+export function extractContextHeuristically(ctx, raw) {
+  const text = clean(raw);
+  const c = normalizeAgreedContext(ctx);
+  if (!text || text.startsWith('/')) return c;
+  const lower = text.toLowerCase();
+  if (META_RE.test(text) && text.length < 60) return mergeContextPatch(c, {}, { source: 'heuristic', turnText: text });
+  if (TRIGGER_RE.test(text)) return mergeContextPatch(c, {}, { source: 'heuristic', turnText: text });
+  const patch = {};
+  const hasBuild = Boolean(c.build);
+
+  if (!c.project) {
+    const obj = objectPhrase(text);
+    if (obj.project) patch.project = obj.project;
+    if (obj.product && !c.product) patch.product = obj.product;
+  }
+  if (!c.purpose && text.length > 24 && !/\b(not|don'?t|no)\b/.test(lower)) patch.purpose = text.slice(0, 160);
+  const audience = text.match(/\bfor\s+(developers|designers|founders|teams|students|enterprises|small businesses|marketers|engineers|creators|kids|parents)\b/i);
+  if (audience) patch.audience = audience[1];
+
+  const visuals = VISUAL_WORDS.filter((w) => new RegExp(`\\b${w}\\b`).test(lower));
+  if (visuals.length) patch.visualDirection = visuals;
+
+  const rejected = [];
+  for (const m of text.matchAll(/\b(?:not|no|never|without|avoid|don'?t (?:want|use|like)|do not (?:want|use)|skip|drop|remove)\s+(?:the\s+|any\s+|a\s+|an\s+)?(?:typical|usual|generic|standard|classic|cliché)?\s*([^.,;!?]{2,60})/gi)) {
+    const chunk = clean(m[1]);
+    if (chunk && !/^(sure|really|yet|now|just)\b/i.test(chunk)) rejected.push(chunk);
+  }
+  const typicalMatch = text.match(/\bnot\s+(?:the\s+|another\s+)?(?:typical|usual|generic|standard)\s+([^.,;!?]{2,60})/i);
+  if (typicalMatch) rejected.push(clean(typicalMatch[1]));
+  if (rejected.length) patch.rejected = rejected;
+
+  if (/\b(hero|title|headline)\b/.test(lower) && /(overload|crowd|busy|clutter|too much|too big|oversized|heavy)/.test(lower)) patch.constraints = ['restrained hero — typography stays the focus'];
+  const focus = text.match(/\b(typography|type|hero|motion|performance|simplicity|content|imagery|color|colour|layout|copy|product)\b[^.,;!?]{0,40}\b(?:main |primary |visual )?focus\b/i);
+  if (focus) { patch.accepted = [`${focus[1].toLowerCase()} as the main focus`]; if (/typograph|type/.test(focus[1].toLowerCase())) patch.typography = 'typography is the primary visual element'; }
+
+  if (/\b(typograph|font|serif|sans|tracking|headline|display type)\b/.test(lower) && !patch.typography) patch.typography = text.slice(0, 160);
+  if (/\b(colou?r|palette|accent|gradient|neon|monochrome|dark mode|light mode)\b/.test(lower)) patch.color = text.slice(0, 160);
+  if (/\b(motion|animat|scroll-driven|scroll|transition|parallax|scrub|micro-?interaction)\b/.test(lower)) patch.motion = text.slice(0, 160);
+  if (/\b(3d|three\.?js|webgl|depth|spatial|immersive)\b/.test(lower)) patch.depth3d = text.slice(0, 160);
+  if (/\b(hero)\b/.test(lower) && !/(overload|crowd)/.test(lower)) patch.hero = text.slice(0, 160);
+  if (/\b(layout|grid|composition|asymmetr|bento|split|columns?)\b/.test(lower)) patch.layout = text.slice(0, 160);
+  if (/\b(hover|cursor|click|drag|interactive|interaction)\b/.test(lower)) patch.interaction = text.slice(0, 160);
+  const tech = ['react', 'next', 'nextjs', 'vue', 'svelte', 'astro', 'tailwind', 'gsap', 'three', 'three.js', 'r3f', 'lenis', 'framer', 'vanilla', 'plain html', 'static'].filter((w) => new RegExp(`\\b${w.replace('.', '\\.')}\\b`).test(lower));
+  if (tech.length) patch.tech = tech;
+  if (/\b(yes|yeah|exactly|perfect|love (it|that)|great|sounds good|like that|keep|go with)\b/.test(lower) && text.length < 200 && !TRIGGER_RE.test(text)) patch.accepted = [...(patch.accepted ?? []), text.slice(0, 120)];
+  if (/\b(what if|maybe|could we|how about|perhaps)\b/.test(lower)) patch.notes = [`idea floated: ${text.slice(0, 120)}`];
+
+  if (hasBuild && !/^(what|why|how|which|is|are|can|does|do)\b/.test(lower) && (/\b(make|add|change|update|remove|replace|tweak|adjust|move|swap|increase|decrease|more|less|bigger|smaller|darker|lighter|rework|redo|improve|refine|polish)\b/.test(lower))) {
+    patch.changeRequests = [text.slice(0, 160)];
+  }
+  return mergeContextPatch(c, patch, { source: 'heuristic', turnText: text });
+}
+
+/** Backwards-compatible alias (older code called updateAgreedContext(ctx, text)). */
+export function updateAgreedContext(ctx, raw) { return extractContextHeuristically(ctx, raw); }
+
+/* ---------------------------------------------------------------- readiness ---- */
+
+/** Is there enough agreed substance to execute without inventing anything? */
+export function contextReadiness(ctx, { hasBuild = false } = {}) {
+  const c = normalizeAgreedContext(ctx);
+  const object = c.project || c.product || c.purpose || c.summary;
+  const signals = [
+    c.visualDirection.length, c.accepted.length, c.rejected.length, c.hero, c.typography, c.color, c.layout, c.motion, c.depth3d, c.composition, c.interaction, c.audience,
+  ].filter((v) => (Array.isArray(v) ? v.length : Boolean(v))).length;
+  if (hasBuild || c.build) {
+    if (c.changeRequests.length) return { ready: true, mode: 'refine', reason: `${c.changeRequests.length} pending change request(s)` };
+    return { ready: false, mode: 'refine', reason: 'nothing-new', signals };
+  }
+  if (!object) return { ready: false, mode: 'create', reason: 'empty-context', signals };
+  if (signals < 1) return { ready: false, mode: 'create', reason: 'no-direction', signals };
+  return { ready: true, mode: 'create', reason: `object + ${signals} design signal(s)`, signals };
+}
+
+/* ------------------------------------------------------------------ render ---- */
+
+export function renderAgreedContext(ctx, { includeBuild = true, title = 'AGREED DESIGN CONTEXT' } = {}) {
+  const c = normalizeAgreedContext(ctx);
+  const lines = [];
+  const add = (label, value) => { if (Array.isArray(value) ? value.length : value) lines.push(`${label}: ${Array.isArray(value) ? value.join(' | ') : value}`); };
+  add('Project', c.project);
+  add('Product', c.product);
+  add('Audience', c.audience);
+  add('Purpose', c.purpose && c.purpose !== c.project ? c.purpose : '');
+  add('Summary', c.summary);
+  add('Visual direction', c.visualDirection);
+  add('Composition', c.composition);
+  add('Layout', c.layout);
+  add('Hero', c.hero);
+  add('Typography', c.typography);
+  add('Color', c.color);
+  add('Motion', c.motion);
+  add('3D / depth', c.depth3d);
+  add('Interaction', c.interaction);
+  add('Tech preferences', c.tech);
+  add('Accepted', c.accepted);
+  add('REJECTED (must NOT do)', c.rejected);
+  add('Constraints', c.constraints);
+  add('Pending change requests', c.changeRequests);
+  if (includeBuild && c.build) lines.push(`Existing build: ${(c.build.files ?? []).join(', ') || 'files unknown'} (${c.build.at ?? ''})${c.build.summary ? ` — ${c.build.summary}` : ''}`);
+  if (!lines.length) return '';
+  return `${title}\n${lines.join('\n')}`;
+}
+
+export function contextDigest(ctx) {
+  const c = normalizeAgreedContext(ctx);
+  const bits = [];
+  if (c.project) bits.push(c.project);
+  if (c.visualDirection.length) bits.push(c.visualDirection.slice(0, 4).join('/'));
+  if (c.rejected.length) bits.push(`avoid: ${c.rejected.slice(0, 3).join(', ')}`);
+  if (c.changeRequests.length) bits.push(`pending: ${c.changeRequests.length}`);
+  if (c.build) bits.push(`built: ${(c.build.files ?? []).length} files`);
+  return bits.join(' · ') || '(nothing agreed yet)';
+}
+
+/** Compact, JSON-safe record for run logs / tests. */
+export function snapshotAgreed(ctx) {
+  const c = normalizeAgreedContext(ctx);
+  return {
+    project: c.project, product: c.product, summary: c.summary,
+    visual: [...c.visualDirection], hero: c.hero, typography: c.typography, color: c.color, motion: c.motion, depth3d: c.depth3d,
+    accepted: [...c.accepted], rejected: [...c.rejected], constraints: [...c.constraints], changeRequests: [...c.changeRequests],
+    decisions: c.decisions.length, built: Boolean(c.build),
+  };
+}
+
+/** Execution directives derived from the context: what to avoid, what to honor. */
+export function directivesFromContext(ctx) {
+  const c = normalizeAgreedContext(ctx);
+  return {
+    product: c.product || c.project,
+    purpose: c.summary || c.purpose || c.project,
+    visual: [...c.visualDirection],
+    avoid: uniq([...c.rejected, ...c.constraints]),
+    emphasis: uniq([c.typography, c.hero, ...c.accepted, c.motion, c.depth3d, c.composition, c.color, c.layout, c.interaction].filter(Boolean)),
+  };
+}
+
+export function recordBuild(ctx, { files = [], summary = '', spec, skills = [], qaScore, mode = 'create', status = 'done' } = {}) {
+  const c = normalizeAgreedContext(ctx);
+  const previousFiles = c.build?.files ?? [];
+  c.build = {
+    at: new Date().toISOString(),
+    files: uniq([...previousFiles, ...files]).slice(-40),
+    summary: clean(summary).slice(0, 200),
+    specSummary: spec?.design ? clean([spec.design.visual_direction, spec.design.hero_concept].filter(Boolean).join(' / ')).slice(0, 240) : c.build?.specSummary,
+    skills: uniq([...(c.build?.skills ?? []), ...skills]).slice(-16),
+    qaScore,
+    mode,
+    status,
+    builds: (c.build?.builds ?? 0) + 1,
+  };
+  if (status === 'done' || status === 'needs-fix') {
+    // Change requests that were executed become part of the accepted record.
+    if (mode === 'refine' && c.changeRequests.length) c.accepted = uniq([...c.accepted, ...c.changeRequests.map((r) => `applied: ${r}`)]).slice(-LIST_CAP);
+    c.changeRequests = [];
+  }
+  c.updatedAt = new Date().toISOString();
   return c;
 }
 
-/** Agreed decisions folded into the build request so execution sees all context. */
+/** Legacy helper: fold the rendered block into a request string. */
 export function applyAgreedToRequest(request, ctx) {
   const block = renderAgreedContext(ctx);
   if (!block) return String(request ?? '');
-  return `${String(request ?? '').trim()}\n[agreed design context — implement ALL of this, respect every REJECTED item:\n${block}]`;
+  return `${String(request ?? '').trim()}\n[${block.replace(/\n/g, '\n')}]`;
 }
-

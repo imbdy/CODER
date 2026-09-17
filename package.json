@@ -2,10 +2,10 @@
   "name": "artisan",
   "version": "0.1.0",
   "private": true,
-  "description": "Artisan - an autonomous frontend design & engineering agent (inspect > understand > plan > build > verify > critique > improve)",
+  "description": "Artisan - a creative frontend design & engineering agent: discuss > agree > build > render > critique > iterate > test",
   "type": "module",
   "engines": {
-    "node": ">=20.10"
+    "node": ">=22"
   },
   "bin": {
     "artisan": "./bin/artisan.mjs"
@@ -18,11 +18,12 @@
     "chat": "node ./bin/artisan.mjs chat",
     "test": "node --test tests/unit/*.test.mjs",
     "test:agent": "node --test tests/agent/design-agent.test.mjs",
-    "test:all": "node --test tests/unit/*.test.mjs tests/agent/*.test.mjs tests/e2e/*.test.mjs",
+    "test:all": "node --test tests/unit/*.test.mjs tests/agent/*.test.mjs",
     "e2e": "node ./scripts/e2e.mjs",
     "serve": "node ./scripts/serve.mjs",
     "doctor": "node ./bin/artisan.mjs doctor",
-    "skills": "node ./bin/artisan.mjs skills list"
+    "skills": "node ./bin/artisan.mjs skills list",
+    "test:flow": "node --test tests/agent/conversation-flow.test.mjs"
   },
   "keywords": [
     "agent",

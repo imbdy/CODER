@@ -1,3 +1,5 @@
+> **Superseded (2026-09-17):** this review describes an earlier architecture. The current runtime (one conversational agent, runtime-owned execution gate, structured agreed context, model-selected skills, headless-browser visual QA with iteration, testing gates) is documented in [ARCHITECTURE.md](ARCHITECTURE.md).
+
 # Artisan Design Agent — Review
 
 A review of the four things you asked about: **sys_prompt**, **agent calling tools**, **agent using skills**, **agent logic thinking** — plus the model, the skills that were added, and how to use it.

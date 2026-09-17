@@ -14,7 +14,7 @@
 </header>
 <main id="main">
   <section class="hero" id="top">
-    <div class="hero__depth" aria-hidden="true"><span class="layer layer--a"></span><span class="layer layer--b"></span><span class="layer layer--c"></span></div>
+    <div class="hero__depth" aria-hidden="true"><span class="layer layer--a"></span><span class="layer layer--b"></span></div>
     <p class="eyebrow">For engineering teams shipping weekly</p>
     <h1 class="display">Read the whole codebase.<br>Ship the right change.</h1>
     <p class="lede">Lattice maps every module, test and dependency in your repository so each suggestion lands in context — not in a vacuum.</p>

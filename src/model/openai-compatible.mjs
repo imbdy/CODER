@@ -5,6 +5,7 @@
  *   ARTISAN_BASE_URL, ARTISAN_API_KEY, ARTISAN_MODEL
  */
 
+import fs from 'node:fs';
 import { ModelProvider, CAPABILITY } from './provider.mjs';
 import { ModelError } from '../core/errors.mjs';
 
@@ -21,6 +22,8 @@ export class OpenAICompatibleProvider extends ModelProvider {
     this.temperature = config.temperature ?? 0.35;
     this.timeoutMs = config.timeoutMs ?? 180000;
     this.extraHeaders = config.headers ?? {};
+    // Vision: explicit config wins; otherwise infer from well-known multimodal model names.
+    this.vision = typeof config.vision === 'boolean' ? config.vision : /gpt-4o|gpt-4\.1|gpt-5|\bo[34]\b|claude|gemini|pixtral|llava|vision|qwen[\d.]*-?vl|minicpm-v|gemma-?3|grok|nova|phi-4-multimodal|omni/i.test(this.model);
   }
 
   get ready() {
@@ -59,12 +62,21 @@ export class OpenAICompatibleProvider extends ModelProvider {
     }
   }
 
-  async generate({ messages, system, prompt, temperature, maxTokens, json }) {
+  async generate({ messages, system, prompt, temperature, maxTokens, json, images }) {
     if (!this.ready) throw new ModelError('openai-compatible provider is not configured');
     const chatMessages = [];
     if (system) chatMessages.push({ role: 'system', content: system });
     if (messages?.length) chatMessages.push(...messages);
-    if (prompt) chatMessages.push({ role: 'user', content: prompt });
+    let imagesSent = false;
+    if (prompt) {
+      const parts = Array.isArray(images) && images.length && this.vision ? images.map(imagePart).filter(Boolean) : [];
+      if (parts.length) {
+        chatMessages.push({ role: 'user', content: [{ type: 'text', text: prompt }, ...parts] });
+        imagesSent = true;
+      } else {
+        chatMessages.push({ role: 'user', content: prompt });
+      }
+    }
 
     const started = Date.now();
     let response;
@@ -111,6 +123,19 @@ export class OpenAICompatibleProvider extends ModelProvider {
     const promptTokens = data?.usage?.prompt_tokens ?? 0;
     const completionTokens = data?.usage?.completion_tokens ?? 0;
     this.recordSuccess({ promptTokens, completionTokens, ms: Date.now() - started });
-    return { text, provider: this.id, model: this.model, promptTokens, completionTokens, ms: Date.now() - started, raw: data };
+    return { text, provider: this.id, model: this.model, promptTokens, completionTokens, ms: Date.now() - started, raw: data, imagesSent };
+  }
+}
+
+/** { path | base64, mime } → OpenAI image_url content part (data URL). */
+function imagePart(image) {
+  try {
+    const mime = image?.mime ?? 'image/png';
+    let base64 = image?.base64;
+    if (!base64 && image?.path) base64 = fs.readFileSync(image.path).toString('base64');
+    if (!base64) return undefined;
+    return { type: 'image_url', image_url: { url: `data:${mime};base64,${base64}`, detail: image?.detail ?? 'auto' } };
+  } catch {
+    return undefined;
   }
 }

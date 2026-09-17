@@ -39,26 +39,31 @@ export const DEFAULT_CONFIG = {
     },
   },
   runtime: {
-    maxPlanSteps: 8, 
-    maxImproveIterations: 1, 
-    maxToolCallsPerStep: 2, 
+    maxPlanSteps: 8,
+    maxImproveIterations: 1,
+    maxToolCallsPerStep: 2,
     maxRepairAttempts: 1,
-    contextBudgetTokens: 6000, 
-    skillBudgetTokens: 4000, 
-    /** Use the LLM tool-calling agent for builds (falls back to the deterministic engine). */
+    /** Implementation-loop history budget (tokens). Small local models get trimmed harder by the router heuristics. */
+    contextBudgetTokens: 24000,
+    /** Budget for skill bodies injected into the implementation prompt (tokens). */
+    skillBudgetTokens: 14000,
+    /** Use the live model executor for builds (falls back to the deterministic engine when no model is reachable). */
     useAgent: true,
-    /** Hard cap on agent steps so a stuck local model cannot loop forever. 7B workflow is 6 steps but needs buffer. */
-    maxAgentSteps: 12,
-    /** Allow extra turns that fix verification findings (undefined tokens, alert(), missing media queries). */
+    /** Hard cap on implementation turns (includes QA iterations and repair passes). */
+    maxAgentSteps: 24,
+    /** Bounded repair passes when structure/tests fail after the model says done. */
     agentRepairPass: true,
-    maxAgentRepairPasses: 1,
-    /** Qwen-7B specific: enforce minimal 5-tool set and trimmed history */
+    maxAgentRepairPasses: 2,
+    /** Visual QA rounds per build: undefined = by complexity (trivial 1, standard 2, complex 3). */
+    maxQaRounds: undefined,
     qwenTools: true,
-    maxTokens: 4096, // per-turn generation limit for 7B
+    /** Per-turn generation limit. */
+    maxTokens: 8192,
   },
   skills: {
     roots: ['skills'],
-    maxSkillsPerTask: 7,
+    /** The model picks up to this many; runtime-required skills are added on top. */
+    maxSkillsPerTask: 8,
     alwaysInclude: ['anti-slop'],
   },
   workspace: {
@@ -85,6 +90,8 @@ export const DEFAULT_CONFIG = {
     devServerTimeoutMs: 90000,
     screenshotTimeoutMs: 60000,
     minQualityScore: 78,
+    /** Optional explicit browser executable (else Chrome/Edge/Chromium are auto-detected; ARTISAN_BROWSER env also works). */
+    browserPath: process.env.ARTISAN_BROWSER || undefined,
   },
   policy: {
     allowShell: true,

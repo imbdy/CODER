@@ -27,14 +27,37 @@ import { TodoManager } from './todo-manager.mjs';
  * Compact and JSON-safe so it can be recorded on the run for inspection. */
 function normalizeAgreed(agreed) {
   const a = agreed ?? {};
-  const clean = (list, max = 10, len = 140) => [...(list ?? [])].map((s) => String(s ?? '').trim()).filter(Boolean).map((s) => s.slice(0, len)).slice(0, max);
+  const clean = (list, max = 10, len = 140) => [...(Array.isArray(list) ? list : (list ? [list] : []))].map((s) => String(s ?? '').trim()).filter(Boolean).map((s) => s.slice(0, len)).slice(0, max);
+  // Accepts the executor's directive shape ({ avoid, emphasis, visual }) and the
+  // raw agreed-context shape ({ rejected/rejectedIdeas, constraints, accepted… }).
+  const avoid = Array.isArray(a.avoid) ? clean(a.avoid) : [...new Set([...clean(a.rejected ?? a.rejectedIdeas), ...clean(a.constraints)])];
+  const emphasis = Array.isArray(a.emphasis) ? clean(a.emphasis) : [...new Set([...clean(a.typography, 6), ...clean(a.accepted ?? a.acceptedIdeas), ...clean(a.motion, 4), ...clean(a.depth3d, 4), ...clean(a.hero, 2)])];
   return {
-    product: String(a.product ?? '').slice(0, 80),
-    purpose: String(a.purpose ?? '').slice(0, 200),
-    visual: [...(a.visualDirection ?? [])].map((s) => String(s)).slice(0, 8),
-    avoid: [...new Set([...clean(a.rejectedIdeas), ...clean(a.constraints)])],
-    emphasis: [...new Set([...clean(a.typography, 6), ...clean(a.acceptedIdeas), ...clean(a.motion, 4), ...clean(a.depth3d, 4)])],
+    product: String(a.product ?? a.project ?? '').slice(0, 80),
+    purpose: String(a.purpose ?? a.summary ?? '').slice(0, 200),
+    visual: [...(a.visual ?? a.visualDirection ?? [])].map((s) => String(s)).slice(0, 8),
+    avoid,
+    emphasis,
   };
+}
+
+/** Deterministic engine: never ship an accent the user explicitly rejected. */
+function avoidAccentClash(direction, avoid = []) {
+  const text = avoid.join(' ').toLowerCase();
+  const hex = String(direction?.accent ?? '');
+  const m = hex.match(/^#([0-9a-f]{6})$/i);
+  if (!m) return direction;
+  const r = parseInt(m[1].slice(0, 2), 16) / 255; const g = parseInt(m[1].slice(2, 4), 16) / 255; const b = parseInt(m[1].slice(4, 6), 16) / 255;
+  const max = Math.max(r, g, b); const min = Math.min(r, g, b); const d = max - min;
+  let h = 0;
+  if (d) { if (max === r) h = ((g - b) / d) % 6; else if (max === g) h = (b - r) / d + 2; else h = (r - g) / d + 4; h = Math.round(h * 60); if (h < 0) h += 360; }
+  const clashes = (/purple|violet|lavender/.test(text) && h >= 245 && h <= 300)
+    || (/\bblue\b/.test(text) && h >= 195 && h < 245)
+    || (/\bpink|magenta\b/.test(text) && h > 300 && h <= 345)
+    || (/\bgreen\b/.test(text) && h >= 90 && h <= 170);
+  if (!clashes) return direction;
+  const replacement = direction.theme === 'dark' ? '#e2a33b' : '#b4532a';
+  return { ...direction, accent: replacement, accentNote: `accent changed from ${hex} to ${replacement}: rejected hue` };
 }
 export async function runTask(request, { workspaceDir, config, overrides = {}, bus: externalBus, agreed = undefined } = {}) {
   const bus = externalBus ?? new EventBus();
@@ -91,9 +114,12 @@ export async function runTask(request, { workspaceDir, config, overrides = {}, b
     run.skills = { ids: skills.ids, summary: skills.summary, discovery: { catalogueSize: registry.size, retrieved: skills.ids.length, method: 'retrieve' } };
     bus.emit(EVENT.SKILLS, { ids: skills.ids });
     stateMachine.transition(STATES.PLANNING, { reason: 'skills retrieved + plan ready' });
-    const { chosen: direction, method } = await chooseDirection({ request, taskType: understanding.taskType, inspection, router, bus, logger });
-    run.direction = { name: direction.name, id: direction.id, method };
+    const chosenDirection = await chooseDirection({ request, taskType: understanding.taskType, inspection, router, bus, logger });
+    const direction = avoidAccentClash(chosenDirection.chosen, agreedCtx.avoid);
+    const method = chosenDirection.method;
+    run.direction = { name: direction.name, id: direction.id, method, accent: direction.accent, accentNote: direction.accentNote };
     run.decisions.push({ kind: 'direction', choice: direction.id, why: method });
+    if (direction.accentNote) run.decisions.push({ kind: 'accent', choice: direction.accent, why: direction.accentNote });
     // INTERNAL design spec (DESIGN → EXPERIENCE → MOTION → TECH → BUILD → QA).
     // Built BEFORE tokens/compose so every later step implements a decision.
     bus.emit(EVENT.PHASE, { phase: 'spec' });
@@ -237,11 +263,29 @@ export async function runTask(request, { workspaceDir, config, overrides = {}, b
     const generic = antiGenericCheck({ html, css, plan: page });
     run.antiGeneric = generic;
     const qa = visualQa({ html, css, plan: page, staticV: verification, spec });
-    run.visualQa = { score: qa.score, ok: qa.ok, notes: qa.notes, fixes: qa.fixes, viewports: qa.viewports };
-    bus.emit(EVENT.CRITIQUE, { overall: qa.score, kind: 'visual-qa' });
+    run.visualQa = { score: qa.score, ok: qa.ok, notes: qa.notes, fixes: qa.fixes, viewports: qa.viewports, rendered: false, method: 'static-heuristics' };
+    // Real render when a headless browser is available — the deterministic
+    // engine cannot fix design-level findings, but it must not hide them.
+    if (!overrides.dryRun && config?.verification?.runVisual !== false) {
+      try {
+        const { runVisualQa } = await import('../verify/visual-qa.mjs');
+        const rendered = await runVisualQa({ workspaceDir, entry: 'index.html', config, spec, agreed: agreed ?? undefined, router: undefined, bus, round: 1, html, css, outDir: path.join(workspaceDir, '.forge', 'qa', `deterministic-${run.id}`) });
+        run.visualQa = {
+          ...run.visualQa,
+          rendered: rendered.rendered, method: rendered.method, browser: rendered.browser, reason: rendered.reason,
+          score: rendered.rendered ? rendered.score : run.visualQa.score, verdict: rendered.verdict,
+          findings: rendered.findings, screenshots: rendered.screenshots, rounds: 1,
+          ok: rendered.rendered ? !rendered.findings.some((f) => f.severity === 'blocker') : qa.ok,
+        };
+      } catch (error) {
+        run.visualQa.renderError = String(error?.message ?? error).slice(0, 200);
+      }
+    }
+    bus.emit(EVENT.CRITIQUE, { overall: run.visualQa.score, kind: 'visual-qa', rendered: run.visualQa.rendered, method: run.visualQa.method, verdict: run.visualQa.verdict, findings: run.visualQa.findings?.length ?? 0, round: 1 });
     // Actionable critique check: if visual QA failed, require iteration before done — only for complex
     const actionableFails = qa.fixes?.length ?? 0;
     const isComplexForQa = stateMachine.getComplexity() === 'complex';
+    if (run.visualQa.rendered) qa.ok = run.visualQa.ok;
     if (isComplexForQa && (!qa.ok || actionableFails > 2)) {
       try { if (stateMachine.getState() === STATES.VISUAL_QA) { stateMachine.transition(STATES.ITERATION, { reason: `visual QA score ${qa.score}, fixes ${actionableFails}` }); bus.emit(EVENT.PHASE, { phase: 'iteration' }); } } catch {}
     }
@@ -252,7 +296,8 @@ export async function runTask(request, { workspaceDir, config, overrides = {}, b
     // Determine final status with gating: complex tasks must pass verification + visual QA + anti-generic
     const isComplex = stateMachine.getComplexity() === 'complex';
     if (isComplex) {
-      const needsIter = !verification.ok || !qa.ok || !generic.pass || gate.failed.length > 0;
+      const renderedWeak = Boolean(run.visualQa?.rendered) && run.visualQa.verdict === 'iterate' && (run.visualQa.findings ?? []).some((f) => f.severity !== 'minor');
+      const needsIter = !verification.ok || !qa.ok || !generic.pass || gate.failed.length > 0 || renderedWeak;
       run.status = needsIter ? 'needs-fix' : 'done';
       if (run.status === 'done') {
         try { stateMachine.transition(STATES.COMPLETED, { reason: 'all gates passed' }); bus.emit(EVENT.PHASE, { phase: 'completed' }); } catch {}
@@ -285,6 +330,8 @@ export async function runTask(request, { workspaceDir, config, overrides = {}, b
       bus.emit(EVENT.IMPROVE, { iteration: 'anti-generic', issues: generic.flags.length });
     }
     run.endedAt = new Date().toISOString();
+    run.engine = 'deterministic';
+    run.summary = `${run.status === 'done' ? 'Built' : 'Built with open issues'} with the deterministic design engine (direction ${direction.name}${direction.accentNote ? `, ${direction.accentNote}` : ''}); ${run.visualQa?.rendered ? `visual QA rendered ${run.visualQa.score}/100 ${run.visualQa.verdict}` : `visual QA not rendered (${run.visualQa?.reason ?? 'no browser'})`}.`;
     if (!overrides.noMemory) recordRun(workspaceDir, config, run);
     bus.emit(EVENT.RUN_END, { id: run.id, status: run.status, score: critique.overall });
     return { run, bus, inspection, direction, tokens, page, html: run.status === 'failed' ? undefined : html, css };

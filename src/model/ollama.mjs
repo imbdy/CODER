@@ -1,5 +1,6 @@
 /** Ollama provider (local models + ollama.com cloud models through the same API). */
 
+import fs from 'node:fs';
 import { ModelProvider, CAPABILITY } from './provider.mjs';
 import { ModelError } from '../core/errors.mjs';
 
@@ -17,6 +18,7 @@ export class OllamaProvider extends ModelProvider {
     this.timeoutMs = config.timeoutMs ?? 240000;
     this.keepAlive = config.keepAlive ?? '30m';
     this.available = undefined;
+    this.vision = typeof config.vision === 'boolean' ? config.vision : /llava|vision|qwen[\d.]*-?vl|minicpm-v|gemma3|moondream|bakllava|llama3\.2-vision|granite.*vision|mistral-small3|pixtral/i.test(this.model);
   }
 
   async health() {
@@ -49,11 +51,16 @@ export class OllamaProvider extends ModelProvider {
     }
   }
 
-  async generate({ messages, system, prompt, temperature, maxTokens, json, numCtx, onToken }) {
+  async generate({ messages, system, prompt, temperature, maxTokens, json, numCtx, onToken, images }) {
     const chatMessages = [];
     if (system) chatMessages.push({ role: 'system', content: system });
     if (messages?.length) chatMessages.push(...messages);
-    if (prompt) chatMessages.push({ role: 'user', content: prompt });
+    let imagesSent = false;
+    if (prompt) {
+      const encoded = Array.isArray(images) && images.length && this.vision ? images.map(encodeImage).filter(Boolean) : [];
+      if (encoded.length) { chatMessages.push({ role: 'user', content: prompt, images: encoded }); imagesSent = true; }
+      else chatMessages.push({ role: 'user', content: prompt });
+    }
 
     const started = Date.now();
     const useStream = typeof onToken === 'function';
@@ -64,7 +71,7 @@ export class OllamaProvider extends ModelProvider {
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({
           model: this.model,
-          messages: chatMessages.map((message) => ({ role: message.role === 'system' ? 'system' : message.role, content: message.content })),
+          messages: chatMessages.map((message) => ({ role: message.role === 'system' ? 'system' : message.role, content: message.content, ...(message.images ? { images: message.images } : {}) })),
           stream: useStream,
           keep_alive: this.keepAlive,
           format: json ? 'json' : undefined,
@@ -127,6 +134,7 @@ export class OllamaProvider extends ModelProvider {
         completionTokens: data.eval_count ?? 0,
         ms: Date.now() - started,
         raw: data,
+        imagesSent,
       };
     }
 
@@ -146,6 +154,15 @@ export class OllamaProvider extends ModelProvider {
       completionTokens: data.eval_count ?? 0,
       ms: Date.now() - started,
       raw: data,
+      imagesSent,
     };
   }
+}
+
+function encodeImage(image) {
+  try {
+    if (image?.base64) return image.base64;
+    if (image?.path) return fs.readFileSync(image.path).toString('base64');
+  } catch { /* skip unreadable image */ }
+  return undefined;
 }

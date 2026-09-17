@@ -36,6 +36,9 @@ export async function main(argv = process.argv.slice(2)) {
   const firstWord = args.requestText.split(/\s+/)[0].toLowerCase();
   const isVerb = ['doctor', 'skills', 'demo'].includes(firstWord);
   const workspaceDir = path.resolve(String(flags.workspace ?? process.cwd()));
+  // A direct build request targets a folder that may not exist yet — create it,
+  // exactly like the chat entry does.
+  if (!isVerb && !fs.existsSync(workspaceDir)) fs.mkdirSync(workspaceDir, { recursive: true });
 
   const config = loadConfig({
     workspaceDir,

@@ -106,6 +106,13 @@ export class ModelRouter {
     return chain.some((provider) => provider && provider.id !== 'deterministic');
   }
 
+  /** Can the brain that would answer right now look at screenshots? */
+  async supportsVision() {
+    const chain = await this.activeChain();
+    const provider = chain.find((entry) => entry && entry.id !== 'deterministic');
+    return Boolean(provider?.vision);
+  }
+
   /** Human-readable description of the brain that would answer right now. */
   async activeBrain() {
     const chain = await this.activeChain();
@@ -182,7 +189,7 @@ export class ModelRouter {
   async text(prompt, options = {}) {
     const {
       kind = 'chat', payload = {}, system, maxTokens = 4096,
-      temperature, phase = 'generate', code = false, languages, messages, onToken, liveOnly = false,
+      temperature, phase = 'generate', code = false, languages, messages, onToken, liveOnly = false, images = [],
     } = options;
     const fullChain = await this.activeChain();
     const chain = fullChain.filter((provider) => provider && (!liveOnly || provider.id !== 'deterministic'));
@@ -211,6 +218,7 @@ export class ModelRouter {
       const started = Date.now();
       for (let attempt = 1; attempt <= 2; attempt += 1) {
       try {
+        const wantsImages = Array.isArray(images) && images.length > 0;
         const response = await provider.generate({
           prompt: messages ? undefined : prompt,
           messages,
@@ -219,6 +227,7 @@ export class ModelRouter {
           json: false,
           maxTokens,
           temperature,
+          images: wantsImages && provider.vision ? images : undefined,
           meta: { kind, payload },
         });
         if (!response.text?.trim()) {
@@ -228,7 +237,8 @@ export class ModelRouter {
         }
         this.#emitCall({ provider, kind, phase, response, started, ok: true });
         const text = code ? extractCodeBlock(response.text, languages) : response.text;
-        return { text, provider: provider.id, model: provider.model, meta: response };
+        const imagesSent = wantsImages && Boolean(provider.vision) && response.imagesSent !== false;
+        return { text, provider: provider.id, model: provider.model, meta: { ...response, imagesSent, imagesDropped: wantsImages && !imagesSent } };
       } catch (error) {
         const msg = String(error?.message ?? error);
         const isRate = msg.includes('429') || msg.includes('413') || msg.includes('Rate limit') || msg.includes('TPM') || msg.includes('Request too large');

@@ -1,776 +1,632 @@
 /**
- * Artisan Agent — the LLM-driven tool-calling loop for frontend design.
+ * Artisan executor — the autonomous build phase.
  *
- * This is the *working* brain of the agent: the model gets an active role.
- * It inspects the workspace, reads skills, plans, writes real files, reads
- * them back, and fixes its own output — one step at a time, until it emits
- * the `done` signal.
+ * Input is a BRIEF (the agreed design context + mode + change requests), not a
+ * loose sentence. The runtime drives explicit phases and enforces the gates;
+ * the model does the creative and engineering reasoning inside each phase:
  *
- * Brain: qwen2.5-coder:7b via Ollama.
+ *   UNDERSTANDING   code   — task type, complexity, mode (create | refine)
+ *   INSPECTION      code   — workspace scan (+ outline of the existing build)
+ *   SKILL_SELECTION model  — picks skills from the catalogue + tech tier; runtime
+ *                            validates, enforces required skills, loads bodies
+ *   PLANNING        model  — design spec + structured TODOs (one JSON call);
+ *   DESIGN_SPEC              runtime validates and adds mandatory QA tasks
+ *   IMPLEMENTATION  model  — tool loop (file blocks + JSON tools), TODO progress
+ *   VISUAL_QA       code+model — headless render, screenshots, metrics, critique
+ *   ITERATION       model  — fixes the weaknesses the QA handed back
+ *   TESTING         code   — structure, static checks, JS syntax, anti-generic
+ *   COMPLETED              — only when every gate passed
  *
  * Output protocol (see ./prompts.mjs):
- *   - ```file:<rel> ... ```     → writeFile (preferred; no JSON escaping)
- *   - ```json [{"tool":...}]``` → any tool, incl. readSkill / patchFile / done
+ *   - ```file:<rel> ... ```     → write file (preferred for large files)
+ *   - ```json [{"tool":...}]``` → tools incl. update_todo / run_qa / done
  */
 
+import fs from 'node:fs';
+import path from 'node:path';
+import { execFileSync } from 'node:child_process';
 import { silentLogger } from '../core/logger.mjs';
 import { EventBus, EVENT } from '../core/events.mjs';
 import { inspectWorkspace, summarizeInspection } from '../workspace/scanner.mjs';
 import { createSkillRegistry } from '../skills/registry.mjs';
-import { createRetriever } from '../skills/retriever.mjs';
+import { selectSkills, requiredSkillsFor } from '../skills/select.mjs';
 import { createRouter } from '../model/router.mjs';
-import { createToolContext } from '../tools/context.mjs';
-import { createQwenToolContext } from '../tools/qwen-context.mjs';
+import { createQwenToolContext, validateToolCall } from '../tools/qwen-context.mjs';
 import { classifyTaskType } from '../reason/understand.mjs';
 import { extractCodeBlock, extractJson } from '../model/json.mjs';
 import { checkStructure } from '../verify/agent-output.mjs';
-import { buildAgentSystemPrompt } from './prompts.mjs';
-import { buildDesignSpec, renderSpecBlock, specSkillPhases } from '../design/spec.mjs';
-import { antiGenericCheck, qualityGateResults } from '../verify/quality-gate.mjs';
+import { verifyStatic } from '../verify/static.mjs';
+import { antiGenericCheck } from '../verify/quality-gate.mjs';
+import { buildAgentSystemPrompt, buildPlanPrompt } from './prompts.mjs';
+import { buildDesignSpec, renderSpecBlock } from '../design/spec.mjs';
 import { rankDirections } from '../design/directions.mjs';
 import { trimHistory } from '../model/history-trim.mjs';
-import { parseAndValidateToolCalls, retryMessage } from '../model/tool-validator.mjs';
-import { validateToolCall } from '../tools/qwen-context.mjs';
-import { AgentStateMachine, STATES } from '../runtime/state-machine.mjs';
+import { retryMessage } from '../model/tool-validator.mjs';
+import { AgentStateMachine, STATES, detectComplexity } from '../runtime/state-machine.mjs';
 import { TodoManager } from '../runtime/todo-manager.mjs';
-import { reasonPlan } from '../reason/plan.mjs';
-import { visualQa } from '../verify/responsive.mjs';
-import { verifyStatic } from '../verify/static.mjs';
+import { normalizeAgreedContext, renderAgreedContext, directivesFromContext } from '../runtime/agreed-context.mjs';
+import { runVisualQa, renderFindingsForModel } from '../verify/visual-qa.mjs';
+import { readWorkspaceFile } from '../workspace/writer.mjs';
 
-/**
- * Fenced-block grammars. Both fences must sit at the start of a line, otherwise
- * a *closing* fence would pair with the next block's *opening* fence and swallow
- * the block in between (that bug silently dropped JSON tool calls).
- */
+/* ---------------------------------------------------------------- grammar ---- */
+
 const FILE_BLOCK_SOURCE = '^[ \\t]*```[ \\t]*(?:[a-z0-9_-]+[ \\t]+)*file:[ \\t]*([^\\s`]+)[ \\t]*\\r?\\n([\\s\\S]*?)^[ \\t]*```';
-const FILE_BLOCK_FLAGS = 'gmi';
-/** Fallback for 7B that emits markdown headings + html/css/js fences instead of file: blocks */
-const HEADING_BLOCK_SOURCE = '^#{2,3}[ \\t]+([^\\n`]+\\.(?:html|css|js|jsx|ts|tsx))[ \\t]*\\r?\\n[ \\t]*```[ \\t]*(?:html|css|javascript|js|jsx|tsx)?[ \\t]*\\r?\\n([\\s\\S]*?)^[ \\t]*```';
-const HEADING_BLOCK_FLAGS = 'gmi';
-/** Matches ` ```json ... ``` ` (and tool_calls / jsonc) blocks. The language tag
- *  is REQUIRED so that a bare closing fence can never start a match. */
+const HEADING_BLOCK_SOURCE = '^#{2,3}[ \\t]+([^\\n`]+\\.(?:html|css|js|mjs|jsx|ts|tsx))[ \\t]*\\r?\\n[ \\t]*```[ \\t]*(?:html|css|javascript|js|jsx|tsx)?[ \\t]*\\r?\\n([\\s\\S]*?)^[ \\t]*```';
 const JSON_BLOCK_SOURCE = '^[ \\t]*```[ \\t]*(?:json|jsonc|tool_calls|tools|json5)[ \\t]*\\r?\\n([\\s\\S]*?)^[ \\t]*```';
-const JSON_BLOCK_FLAGS = 'gmi';
+
+/* ------------------------------------------------------------------ brief ---- */
+
+export function normalizeBrief(input) {
+  if (typeof input === 'string') return { request: input.trim(), mode: 'create', agreed: undefined, changeRequests: [] };
+  const brief = input ?? {};
+  const agreed = brief.agreed ? normalizeAgreedContext(brief.agreed) : undefined;
+  const changeRequests = [...(brief.changeRequests ?? agreed?.changeRequests ?? [])].map(String).filter(Boolean);
+  const mode = brief.mode ?? (agreed?.build ? 'refine' : 'create');
+  return { request: String(brief.request ?? '').trim(), mode, agreed, changeRequests };
+}
+
+export function briefText(brief) {
+  const parts = [];
+  if (brief.mode === 'refine') {
+    parts.push(`REFINE the existing implementation. Requested changes:\n${brief.changeRequests.map((r) => `- ${r}`).join('\n') || `- ${brief.request}`}`);
+    if (brief.request && !brief.changeRequests.includes(brief.request)) parts.push(`Trigger message: ${brief.request}`);
+  } else {
+    parts.push(brief.request || (brief.agreed?.summary ?? brief.agreed?.project ?? '') || 'Build the agreed design.');
+  }
+  const block = brief.agreed ? renderAgreedContext(brief.agreed) : '';
+  if (block) parts.push(block);
+  return parts.join('\n\n');
+}
+
+/** Outline of what already exists so a refinement edits instead of rebuilding. */
+function existingOutline(workspaceDir, inspection) {
+  const files = (inspection.files ?? []).filter((f) => !f.rel.startsWith('.forge')).slice(0, 30);
+  if (!files.length) return '';
+  const lines = ['EXISTING FILES: ' + files.map((f) => `${f.rel} (${Math.round(f.size / 1024 * 10) / 10} KB)`).join(', ')];
+  const htmlRel = inspection.primaryHtmlRel ?? files.find((f) => f.ext === '.html')?.rel;
+  const html = htmlRel ? readWorkspaceFile(workspaceDir, htmlRel) ?? '' : '';
+  if (html) {
+    const sections = [...html.matchAll(/<(header|nav|main|section|article|aside|footer)\b([^>]*)>/gi)].slice(0, 20).map((m) => `${m[1]}${/id="([^"]+)"/.exec(m[2])?.[1] ? `#${/id="([^"]+)"/.exec(m[2])[1]}` : ''}${/class="([^"]+)"/.exec(m[2])?.[1] ? `.${/class="([^"]+)"/.exec(m[2])[1].split(/\s+/)[0]}` : ''}`);
+    if (sections.length) lines.push(`${htmlRel} structure: ${sections.join(' > ')}`);
+    const h1 = html.match(/<h1[^>]*>([\s\S]*?)<\/h1>/i)?.[1]?.replace(/<[^>]+>/g, '').trim();
+    if (h1) lines.push(`h1: "${h1.slice(0, 80)}"`);
+  }
+  const cssRel = files.find((f) => f.ext === '.css')?.rel;
+  const css = cssRel ? readWorkspaceFile(workspaceDir, cssRel) ?? '' : '';
+  if (css) {
+    const tokens = [...css.matchAll(/--([a-z0-9-]+)\s*:\s*([^;]+);/gi)].slice(0, 28).map((m) => `--${m[1]}: ${m[2].trim().slice(0, 40)}`);
+    if (tokens.length) lines.push(`${cssRel} tokens: ${tokens.join('; ')}`);
+  }
+  return lines.join('\n');
+}
+
+/* --------------------------------------------------------------- spec map ---- */
+
+function specFromModel(value, { brief, tech, understanding, inspection }) {
+  const s = value?.spec && typeof value.spec === 'object' ? value.spec : null;
+  if (!s) return undefined;
+  const str = (v) => String(v ?? '').replace(/\s+/g, ' ').trim().slice(0, 400);
+  const t = value.tech && typeof value.tech === 'object' ? value.tech : {};
+  const depth = ['css', 'threejs', 'r3f', 'shader'].includes(t.depth) ? t.depth : (tech.depth ?? 'css');
+  const animation = ['css', 'vanilla', 'gsap'].includes(t.animation) ? t.animation : (tech.animation ?? 'vanilla');
+  const directives = brief.agreed ? directivesFromContext(brief.agreed) : { avoid: [], emphasis: [] };
+  const motionText = str(s.motion_language);
+  const layers = [];
+  if (/reveal|entrance|fade|rise|stagger/i.test(motionText)) layers.push({ layer: 'reveal', what: motionText.slice(0, 80), tech: animation });
+  if (/scroll|scrub|pin|parallax/i.test(motionText)) layers.push({ layer: 'scroll', what: motionText.slice(0, 80), tech: animation });
+  if (/hover|press|micro|cursor|magnetic/i.test(motionText)) layers.push({ layer: 'micro', what: 'hover/press states', tech: 'css' });
+  return {
+    source: 'model',
+    taskType: understanding.taskType,
+    feels: brief.agreed?.visualDirection?.slice(0, 4) ?? [],
+    design: {
+      project: brief.agreed?.product || brief.agreed?.project || understanding.subject,
+      purpose: brief.agreed?.summary || brief.agreed?.purpose || understanding.subject,
+      avoid: directives.avoid,
+      emphasis: directives.emphasis,
+      visual_direction: str(s.visual_direction),
+      layout_strategy: str(s.layout_strategy),
+      typography: str(s.typography),
+      color_system: str(s.color_system),
+      hero_concept: str(s.hero_concept),
+      motion_language: motionText,
+      '3d_strategy': str(s.depth_strategy ?? s['3d_strategy']),
+      interaction_strategy: str(s.interaction_strategy),
+      responsive_strategy: str(s.responsive_strategy),
+      performance_constraints: str(s.performance_constraints),
+      copy_direction: str(s.copy_direction),
+    },
+    motion: { layers, cinematic: animation === 'gsap', reducedMotion: true, seq: motionText },
+    tech: { depth, animation, libraries: Array.isArray(t.libraries) ? t.libraries.map(String).slice(0, 6) : (tech.libraries ?? []), depthReason: str(t.why ?? tech.why), fallback: depth === 'css' ? 'pure CSS' : 'static layer when WebGL is unavailable or reduced motion', framework: inspection.framework ?? 'static' },
+    files: Array.isArray(value.files) ? value.files.map(String).slice(0, 12) : [],
+    plan: { iterations: [] },
+  };
+}
+
+function deterministicSpec({ brief, text, understanding, inspection, tech }) {
+  const ranked = rankDirections({ request: text, taskType: understanding.taskType, inspection, limit: 1 });
+  const spec = buildDesignSpec({ request: text, understanding, direction: ranked[0]?.direction, inspection, agreed: brief.agreed ? directivesFromContext(brief.agreed) : {} });
+  spec.source = 'deterministic';
+  if (tech?.depth && tech.depth !== 'css' && spec.tech.depth === 'css') { spec.tech.depth = tech.depth; spec.tech.depthReason = tech.why || 'chosen during skill selection'; }
+  if (tech?.animation === 'gsap') spec.tech.animation = 'gsap';
+  return spec;
+}
+
+/* ------------------------------------------------------------------- tests ---- */
+
+function runTests({ workspaceDir, rels, inspection, config }) {
+  const issues = [];
+  const warnings = [];
+  const checks = {};
+  const structure = checkStructure(workspaceDir, rels.map((rel) => ({ rel })));
+  checks.structure = { ok: structure.ok, summary: structure.summary };
+  issues.push(...(structure.issues ?? []).map((i) => `structure: ${i}`));
+  warnings.push(...(structure.warnings ?? []).map((w) => `structure: ${w}`));
+  const htmlRel = structure.files?.html ?? rels.find((r) => r.endsWith('.html'));
+  const html = htmlRel ? readWorkspaceFile(workspaceDir, htmlRel) ?? '' : '';
+  const css = (structure.files?.css ?? rels.filter((r) => r.endsWith('.css'))).map((r) => readWorkspaceFile(workspaceDir, r) ?? '').join('\n') || (html.match(/<style[^>]*>([\s\S]*?)<\/style>/i)?.[1] ?? '');
+  if (html) {
+    const staticV = verifyStatic({ html, css, plan: undefined });
+    checks.static = { ok: staticV.ok, score: staticV.score, summary: staticV.summary };
+    issues.push(...staticV.issues.filter((i) => i.severity === 'error' && i.check !== 'form-js').map((i) => `static: ${i.message}`));
+    warnings.push(...staticV.issues.filter((i) => i.severity !== 'error').map((i) => `static: ${i.message}`));
+    const generic = antiGenericCheck({ html, css });
+    checks.antiGeneric = { pass: generic.pass, flags: generic.flags };
+    warnings.push(...generic.flags.map((f) => `anti-generic: ${f}`));
+  }
+  const jsRels = rels.filter((r) => /\.(m?js)$/.test(r));
+  const syntaxErrors = [];
+  for (const rel of jsRels.slice(0, 12)) {
+    try { execFileSync(process.execPath, ['--check', path.resolve(workspaceDir, rel)], { stdio: ['ignore', 'ignore', 'pipe'], windowsHide: true, timeout: 15000 }); }
+    catch (error) { syntaxErrors.push(`${rel}: ${String(error?.stderr ?? error?.message ?? error).split('\n').slice(0, 3).join(' ').slice(0, 200)}`); }
+  }
+  checks.jsSyntax = { checked: jsRels.length, errors: syntaxErrors };
+  issues.push(...syntaxErrors.map((e) => `js syntax: ${e}`));
+  if (config?.verification?.runBuild !== false && inspection?.scripts?.build && inspection?.hasNodeModules) {
+    try {
+      execFileSync(process.platform === 'win32' ? 'npm.cmd' : 'npm', ['run', 'build', '--silent'], { cwd: workspaceDir, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true, timeout: Number(config?.verification?.devServerTimeoutMs ?? 90000), shell: process.platform === 'win32' });
+      checks.build = { ok: true };
+    } catch (error) {
+      checks.build = { ok: false, error: String(error?.stderr ?? error?.message ?? error).slice(-600) };
+      issues.push(`build: npm run build failed — ${checks.build.error.split('\n').slice(-3).join(' ').slice(0, 240)}`);
+    }
+  }
+  return { ok: issues.length === 0, issues, warnings, checks };
+}
+
+/* ---------------------------------------------------------------- runAgent ---- */
 
 /**
- * Run the agent on a single request.
- *
- * @param {string} request
- * @param {object} opts
- * @param {string} opts.workspaceDir
- * @param {object} [opts.config]
- * @param {object} [opts.bus]
- * @param {object} [opts.logger]
- * @param {number} [opts.maxSteps=15]
- * @param {boolean} [opts.dryRun=false]
- * @param {object} [opts.router] reuse an existing router (health cache, trace)
- * @param {object} [opts.registry] reuse an existing skill registry
- * @param {Function} [opts.onStep] callback({ step, think, calls, writes })
+ * Run the executor on a brief.
+ * @param {string|object} input  request string or { request, mode, agreed, changeRequests }
  */
-export async function runAgent(request, {
+export async function runAgent(input, {
   workspaceDir, config, bus: externalBus, logger: extLogger,
-  maxSteps = 15, dryRun = false, router: extRouter, registry: extRegistry, onStep, history = [],
+  maxSteps, dryRun = false, router: extRouter, registry: extRegistry, onStep, qaOutDir,
 } = {}) {
   const bus = externalBus ?? new EventBus();
   const logger = extLogger ?? silentLogger;
   const router = extRouter ?? createRouter({ config, bus, logger });
   const registry = extRegistry ?? createSkillRegistry({ skills: config?.skills ?? {}, logger });
-  const retriever = createRetriever({ registry, config, logger });
   const startedAt = Date.now();
+  const brief = normalizeBrief(input);
+  const text = briefText(brief);
+  const stepBudget = Number(maxSteps ?? config?.runtime?.maxAgentSteps ?? 24);
+  const transcript = [];
+  const actions = [];
+  const note = (step, msg) => transcript.push({ step, role: 'system', text: msg });
 
-  // ---- STATE MACHINE: UNDERSTANDING → INSPECTION ----
-  const understandingRaw = { taskType: classifyTaskType(request), subject: request.slice(0, 80) };
+  // ---- UNDERSTANDING
   bus.emit(EVENT.PHASE, { phase: 'understand' });
-  bus.emit(EVENT.THOUGHT, { phase: 'understand', text: `taskType=${understandingRaw.taskType}` });
+  const requestForType = brief.mode === 'refine' ? `Refine existing: ${brief.changeRequests.join('. ') || brief.request}` : (brief.request || brief.agreed?.summary || brief.agreed?.project || text);
+  const taskType = brief.mode === 'refine' ? 'enhance' : classifyTaskType(requestForType);
+  const understanding = { taskType, subject: (brief.agreed?.summary || brief.agreed?.project || brief.request || '').slice(0, 120), mode: brief.mode };
+  bus.emit(EVENT.THOUGHT, { phase: 'understand', text: `mode=${brief.mode} taskType=${taskType}` });
 
+  // ---- INSPECTION
   bus.emit(EVENT.PHASE, { phase: 'inspect' });
   const inspection = inspectWorkspace(workspaceDir, config);
   bus.emit(EVENT.THOUGHT, { phase: 'inspect', text: summarizeInspection(inspection) });
-
-  const taskType = understandingRaw.taskType;
-  // State machine enforces workflow; complexity determines full vs short path
-  const stateMachine = new AgentStateMachine({ request, understanding: understandingRaw, inspection });
-  bus.emit(EVENT.PHASE, { phase: 'state', text: `complexity=${stateMachine.getComplexity()} workflow=${stateMachine.getWorkflow().join('→')}` });
-  stateMachine.transition(STATES.INSPECTION, { reason: 'workspace inspected', data: { inspection } });
-  // ---- SKILL SELECTION + DESIGN SPEC ----
-  // Deterministic direction + spec BEFORE implementation (prevents generic components)
-  const ranked = rankDirections({ request, taskType, inspection, limit: 1 });
-  const specDirection = ranked[0]?.direction;
-  const spec = buildDesignSpec({ request, understanding: understandingRaw, direction: specDirection, inspection });
-  const specPhases = specSkillPhases(spec);
-  bus.emit(EVENT.THOUGHT, { phase: 'spec', text: renderSpecBlock(spec).slice(0, 600) });
-  stateMachine.transition(STATES.SKILL_SELECTION, { reason: 'spec built', data: { spec } });
-
-  const skills = retriever.retrieve({ request, taskType, workspace: inspection });
-  try {
-    const phased = retriever.retrieveForPhases({ phases: specPhases, request, taskType, workspace: inspection, maxSkills: 2, budgetTokens: 2500 });
-    for (const id of phased.ids) if (!skills.ids.includes(id)) { skills.ids.push(id); skills.contextBlock = `${skills.contextBlock ?? ''}\n\n---\n\n${phased.contextBlocks ? Object.values(phased.contextBlocks).join('\n\n---\n\n') : ''}`.slice(-6000); }
-    skills.phases = phased.phases;
-  } catch { /* base retrieval stands */ }
-  // Force required skills when spec demands them — ensure model cannot ignore them and deterministic fallback has them
-  const forceAgent = [];
-  if (spec.tech.depth !== 'css' && !skills.ids.includes('threejs')) forceAgent.push('threejs');
-  if (spec.motion?.cinematic && !skills.ids.includes('gsap')) forceAgent.push('gsap');
-  if (spec.motion?.layers?.some(l=>l.layer==='parallax' || l.layer==='scroll-story') && !skills.ids.includes('parallax')) forceAgent.push('parallax');
-  if (!skills.ids.includes('motion') && spec.motion?.layers?.length > 1) forceAgent.push('motion');
-  for (const id of forceAgent) if (registry.has(id) && !skills.ids.includes(id)) {
-    skills.ids.push(id);
-    try { const doc = registry.documents([id]).join('\n\n---\n\n'); if (doc) skills.contextBlock = `${skills.contextBlock ?? ''}\n\n---\n\n${doc}`.slice(-7000); } catch {}
-  }
-  if (forceAgent.length) skills.forced = forceAgent;
-  bus.emit(EVENT.SKILLS, { ids: skills.ids });
-  // ---- PLANNING + TODO ----
-  const plan = reasonPlan({ understanding: understandingRaw, inspection });
-  const todoManager = new TodoManager();
-  todoManager.createFromSpec(spec, plan);
-  bus.emit(EVENT.PLAN, { steps: todoManager.list().length, todos: todoManager.toBusEvents() });
-  stateMachine.transition(STATES.PLANNING, { reason: 'plan created', data: { plan } });
-  stateMachine.transition(STATES.DESIGN_SPEC, { reason: 'design spec finalized', data: { spec } });
-  // Determine required skills for enforcement (prevent ignoring relevant skills)
-  const requiredForEnforcement = (() => {
-    const needed = new Set();
-    // Phase-gated spec indicates what creative/motion skills are needed
-    for (const p of specSkillPhases(spec)) {
-      // map phases to key skills
-      if (p === 'creative') { needed.add('threejs'); needed.add('visual-design'); }
-      if (p === 'motion') { needed.add('motion'); needed.add('animation-principles'); }
-      if (p === 'polish') { needed.add('anti-slop'); }
-    }
-    // Request-driven triggers
-    const t = String(request).toLowerCase();
-    if (/\b3d|three\.?js|webgl|immersive|depth/.test(t)) { needed.add('threejs'); needed.add('3d-performance'); }
-    if (/\bmotion|parallax|gsap|cinematic|scroll/.test(t)) { needed.add('gsap'); needed.add('motion'); }
-    if (/\btypography|editorial|premium|futuristic/.test(t)) { needed.add('typography'); needed.add('visual-design'); }
-    // Filter to skills that actually exist
-    return [...needed].filter(id => registry.has(id));
-  })();
-  // Track skill discovery enforcement
-  let hasListedSkills = false;
-  let skillsReadSet = new Set();
+  const outline = brief.mode === 'refine' || !inspection.isEmpty ? existingOutline(workspaceDir, inspection) : '';
+  const stateMachine = new AgentStateMachine({ request: text, understanding, inspection });
+  if (brief.mode === 'refine' && stateMachine.complexity === 'complex' && brief.changeRequests.join(' ').length < 160) stateMachine.complexity = 'standard';
   const complexity = stateMachine.getComplexity();
-  const needsSkillEnforcement = complexity === 'complex' && requiredForEnforcement.length > 0;
-  // For trivial tasks, we allow short workflow - mark PLANNING/SPEC as completed quickly
-  // Next state is IMPLEMENTATION - will transition on first file write
-  // Mark todos for initial phase as in-progress progression
-  if (todoManager.list().length) {
-    const first = todoManager.list()[0];
-    if (first) todoManager.update(first.id, { status: 'in_progress' });
+  bus.emit(EVENT.THOUGHT, { phase: 'state', text: `complexity=${complexity}` });
+  stateMachine.transition(STATES.INSPECTION, { reason: 'workspace inspected', data: { files: inspection.fileCount } });
+
+  // ---- SKILL_SELECTION (model picks, runtime enforces + loads)
+  bus.emit(EVENT.PHASE, { phase: 'skills' });
+  const skills = await selectSkills({ router, registry, brief: { text, mode: brief.mode, agreed: brief.agreed, taskType }, inspection, config, bus, logger, complexity });
+  stateMachine.transition(STATES.SKILL_SELECTION, { reason: `skills ${skills.method}`, data: { ids: skills.ids } });
+  bus.emit(EVENT.THOUGHT, { phase: 'skills', text: `${skills.method}: ${skills.ids.join(', ')} | tech ${skills.tech.depth}/${skills.tech.animation}` });
+
+  // ---- PLANNING + DESIGN_SPEC (one model call → spec + structured TODOs)
+  bus.emit(EVENT.PHASE, { phase: 'plan' });
+  let spec;
+  let todoManager;
+  let planSource = 'deterministic';
+  const planWarnings = [];
+  const live = await router.hasLiveModel().catch(() => false);
+  if (live) {
+    try {
+      const prompt = buildPlanPrompt({ brief: { text }, inspection, skillsBlock: skills.contextBlock.slice(0, 24000), mode: brief.mode, existingOutline: outline, tech: skills.tech, skillIds: skills.ids });
+      const response = await router.text(prompt, { kind: 'plan', phase: 'plan', liveOnly: true, maxTokens: 2200, temperature: 0.3, system: 'You are a design director and lead frontend engineer. Reply with STRICT JSON only.' });
+      const parsed = extractJson(response.text);
+      if (parsed.ok && parsed.value && typeof parsed.value === 'object') {
+        spec = specFromModel(parsed.value, { brief, tech: skills.tech, understanding, inspection });
+        const built = TodoManager.fromModel(parsed.value.todos ?? []);
+        planWarnings.push(...built.warnings);
+        if (built.manager.list().length) { todoManager = built.manager; planSource = 'model'; }
+      } else {
+        planWarnings.push('plan reply was not valid JSON — deterministic spec used');
+      }
+    } catch (error) {
+      planWarnings.push(`plan call failed: ${String(error?.message ?? error).slice(0, 160)}`);
+    }
   }
+  if (!spec) spec = deterministicSpec({ brief, text, understanding, inspection, tech: skills.tech });
+  if (!todoManager) {
+    todoManager = new TodoManager();
+    if (brief.mode === 'refine') {
+      todoManager.create(brief.changeRequests.map((r, i) => ({ id: `I${i + 1}`, description: r, priority: i === 0 ? 'high' : 'medium', dependencies: i > 0 ? [`I${i}`] : [], completionCondition: 'change visible in the rendered page' })));
+    } else {
+      todoManager.createFromSpec(spec, { steps: [] });
+    }
+  }
+  const ensured = todoManager.ensureRequired({ complexity, mode: brief.mode });
+  // Required skills implied by the FINAL tech decision — load anything still missing.
+  const requiredAfterSpec = requiredSkillsFor({ tech: spec.tech, inspection, brief, registry, complexity }).filter((id) => !skills.ids.includes(id));
+  if (requiredAfterSpec.length) {
+    const docs = registry.documents(requiredAfterSpec).join('\n\n---\n\n');
+    skills.ids.push(...requiredAfterSpec);
+    skills.loaded.push(...requiredAfterSpec.map((id) => ({ id, tokens: registry.get(id)?.tokens ?? 0, source: 'required' })));
+    skills.contextBlock = `${skills.contextBlock}\n\n---\n\n${docs}`;
+    skills.required = [...new Set([...(skills.required ?? []), ...requiredAfterSpec])];
+  }
+  stateMachine.transition(STATES.PLANNING, { reason: `plan ${planSource}`, data: { todos: todoManager.list().length } });
+  stateMachine.transition(STATES.DESIGN_SPEC, { reason: `spec ${spec.source}`, data: { tech: spec.tech } });
+  bus.emit(EVENT.SKILLS, { ids: skills.ids, loaded: skills.loaded.map((l) => l.id), method: skills.method, required: skills.required });
+  bus.emit(EVENT.PLAN, { steps: todoManager.list().length, todos: todoManager.toBusEvents(), source: planSource, ensured });
+  bus.emit(EVENT.THOUGHT, { phase: 'spec', text: renderSpecBlock(spec).slice(0, 700) });
+  if (todoManager.list().length) { try { todoManager.start(todoManager.list()[0].id); } catch {} }
 
-  // The agent's hands: Qwen minimal 7-tool set (7B) — registry passed for readSkill admissibility
-  const useQwenTools = config?.runtime?.qwenTools !== false; // default true for 7B
-  const tools = useQwenTools
-    ? createQwenToolContext({ workspaceDir, config, bus, dryRun, registry })
-    : createToolContext({ workspaceDir, config, bus, dryRun, registry });
-  // Keep registry tools accessible internally even in qwen mode for plan/inspect
-  const legacyTools = useQwenTools ? createToolContext({ workspaceDir, config, bus, dryRun, registry }) : null;
-
-  // Cheap catalogue (id + description) so the model knows what it may read.
-  const skillIndex = registry.list().map((skill) => ({ id: skill.id, category: skill.category, description: skill.description }));
-
+  // ---- IMPLEMENTATION (tool loop)
+  const tools = createQwenToolContext({ workspaceDir, config, bus, dryRun, registry });
+  const agreedBlock = brief.agreed ? renderAgreedContext(brief.agreed) : '';
   const system = buildAgentSystemPrompt({
-    skillsContext: skills.contextBlock ?? '',
-    inspection,
-    skillIndex,
-    spec,
+    inspection, spec, skills: { contextBlock: skills.contextBlock }, todos: todoManager.list(), mode: brief.mode,
+    agreedBlock, brief: brief.mode === 'refine' ? `Requested changes: ${brief.changeRequests.join(' | ') || brief.request}` : (brief.request || ''),
+    loadedSkillIds: skills.ids, existingOutline: outline,
   });
-  const userMessage = buildUserMessage(request, inspection, skills, spec);
-  // `system` is passed on every call; keeping it out of `messages` avoids
-  // sending the (large) prompt twice per turn.
-  const messages = [{ role: 'user', content: userMessage }];
+  const messages = [{ role: 'user', content: kickoffMessage({ brief, todoManager, inspection }) }];
+  const isGroq = /groq/.test(String(config?.models?.openaiCompatible?.baseUrl ?? '')) || /gpt-oss/.test(String(config?.models?.openaiCompatible?.model ?? ''));
+  const historyBudget = isGroq ? 3500 : Number(config?.runtime?.contextBudgetTokens ?? 24000);
+  const maxQaRounds = Number(config?.runtime?.maxQaRounds ?? (complexity === 'complex' ? 3 : complexity === 'trivial' ? 1 : 2));
+  const MAX_REPAIR = Number(config?.runtime?.maxAgentRepairPasses ?? 2);
 
-  const actions = [];
-  const transcript = [];
-  let provider = 'deterministic';
-  let model = 'fallback';
+  let provider = 'none';
+  let model = 'none';
   let finalSummary = '';
   let done = false;
+  let lastError;
+  let emptyTurns = 0;
+  let parseFailures = 0;
   let repairPasses = 0;
-  const MAX_REPAIR_PASSES = Number(config?.runtime?.maxAgentRepairPasses ?? 2);
+  let todoNudges = 0;
+  const qaRounds = [];
+  const skillsReadSet = new Set();
+  let testing;
+  const exists = (rel) => fs.existsSync(path.resolve(workspaceDir, String(rel).replace(/^\.?\//, '')));
+  const writtenRels = () => [...new Set(actions.filter((a) => ['writeFile', 'write_file', 'edit_file', 'patchFile'].includes(a.tool) && a.result && !a.result.error).map((a) => a.args.path ?? a.args.rel).filter(Boolean))];
+  const allRels = () => [...new Set([...(inspection.files ?? []).map((f) => f.rel).filter((r) => !r.startsWith('.forge')), ...writtenRels()])];
+  const entryHtml = () => { const rels = allRels(); return rels.find((r) => /^index\.html?$/i.test(r)) ?? rels.find((r) => /(^|\/)index\.html?$/i.test(r)) ?? rels.find((r) => r.endsWith('.html')); };
 
-  /**
-   * Bounded repair turns: if the files the agent wrote have structural
-   * problems or sloppy quality signals, hand it the list and let it fix them
-   * before we accept the `done` signal. Skipped when disabled in config.
-   */
-  const injectRepair = (step, extraProblems = null) => {
-    if (config?.runtime?.agentRepairPass === false) return null;
-    if (repairPasses >= MAX_REPAIR_PASSES) return null;
-    const rels = actions
-      .filter((action) => action.tool === 'writeFile' && action.result && !action.result.error && action.args.rel)
-      .map((action) => ({ rel: action.args.rel }));
-    if (!rels.length) return null;
-    const check = checkStructure(workspaceDir, rels);
-    const problems = [...(extraProblems ?? []), ...check.issues, ...check.warnings];
-    if (!problems.length) return null;
-    repairPasses += 1;
-    transcript.push({ step, role: 'system', text: `repair pass ${repairPasses}: ${problems.join('; ')}` });
-    messages.push({
-      role: 'user',
-      content: [
-        `VERIFY found ${problems.length} problems in the files you just wrote:`,
-        ...problems.map((problem) => `- ${problem}`),
-        '',
-        'Fix ALL of them now. Rules for this fix:',
-        '- Emit REAL fenced file blocks (```file:path) with the complete corrected file. Narrating ("[wrote x]", "fixed it", "### DONE") writes nothing.',
-        '- If the html body is nearly empty, you skipped the markup: build the FULL page the request asks for — every section, real brand copy, semantic tags.',
-        '- Do not touch files that are already correct. Then emit the done signal again.',
-      ].join('\n'),
-    });
-    // Mark iteration state if needed
-    try { if (stateMachine.getState() !== STATES.ITERATION) stateMachine.transition(STATES.ITERATION, { reason: 'auto-repair triggered', data: { problems } }); } catch {}
-    return true;
+  const runQaRound = async (step, reason) => {
+    const round = qaRounds.length + 1;
+    bus.emit(EVENT.PHASE, { phase: 'visual-qa', round });
+    if (stateMachine.getState() !== STATES.VISUAL_QA) { try { stateMachine.transition(STATES.VISUAL_QA, { reason }); } catch {} }
+    const entry = entryHtml();
+    const outDir = qaOutDir ? path.join(qaOutDir, `round-${round}`) : path.join(workspaceDir, '.forge', 'qa', `round-${round}`);
+    let qa;
+    if (!entry) {
+      qa = { rendered: false, method: 'static-only', reason: 'no html entry point to render (framework projects need a dev server)', score: 0, minScore: Number(config?.verification?.minQualityScore ?? 78), verdict: 'iterate', findings: [{ area: 'visual-qa', severity: 'major', evidence: 'no html entry point found to render', fix: 'write index.html (static) so the page can be rendered and reviewed', source: 'static' }], screenshots: [], round, digest: '' };
+    } else {
+      const html = readWorkspaceFile(workspaceDir, entry) ?? '';
+      const cssRel = allRels().find((r) => r.endsWith('.css'));
+      const css = cssRel ? readWorkspaceFile(workspaceDir, cssRel) ?? '' : '';
+      qa = await runVisualQa({ workspaceDir, entry, config, spec, agreed: brief.agreed, router, bus, outDir, round, mode: brief.mode, html, css });
+    }
+    qaRounds.push({ round, step, reason, rendered: qa.rendered, method: qa.method, score: qa.score, verdict: qa.verdict, findings: qa.findings, screenshots: qa.screenshots, critique: qa.critique ? { provider: qa.critique.provider, model: qa.critique.model, vision: qa.critique.vision, summary: qa.critique.summary, score: qa.critique.score, verdict: qa.critique.verdict } : undefined, reason_unrendered: qa.reason, ms: qa.ms });
+    note(step, `visual QA round ${round}: ${qa.rendered ? qa.method : `NOT rendered (${qa.reason})`} score ${qa.score} verdict ${qa.verdict} (${qa.findings.length} findings)`);
+    const qaTodo = todoManager.list().find((t) => /visual qa|render|critique/i.test(t.description) || t.id === 'QA');
+    if (qaTodo && qa.verdict === 'pass') { try { for (const dep of qaTodo.dependencies ?? []) if (todoManager.get(dep)?.status !== 'completed') todoManager.update(dep, { status: 'completed', note: 'auto: preceded visual QA pass' }); if (qaTodo.status !== 'completed') todoManager.update(qaTodo.id, { status: 'completed', note: `visual QA pass ${qa.score}` }); } catch {} }
+    return qa;
   };
 
-  // ---- ENFORCEMENT HELPERS ----
-  const missingRequiredSkills = () => needsSkillEnforcement ? requiredForEnforcement.filter(id => !skillsReadSet.has(id)) : [];
-  const enforceSkillReads = (step) => {
-    if (!needsSkillEnforcement) return null;
-    const missing = missingRequiredSkills();
-    if (!missing.length) return null;
-    // Require discovery first
-    if (!hasListedSkills) {
-      transcript.push({ step, role: 'system', text: `skill gate: must call list_skills before coding` });
-      messages.push({
-        role: 'user',
-        content: `SKILL GATE: You have not discovered skills yet. For this "${complexity}" task you MUST:\n1. Call list_skills to see catalogue\n2. Call read_skill for each relevant skill before writing code\nRequired for this request: ${requiredForEnforcement.join(', ')}\nMissing: ${missing.join(', ')}\nCall list_skills now, then read_skill for at least 2 of them before any write_file.\nEmit: \`\`\`json\n[{"tool":"list_skills","args":{}}]\n\`\`\``,
-      });
-      return true;
-    }
-    // Require reading
-    if (skillsReadSet.size < 1) {
-      transcript.push({ step, role: 'system', text: `skill gate: must read relevant skills ${missing.join(', ')}` });
-      messages.push({
-        role: 'user',
-        content: `SKILL GATE: You discovered skills but have not loaded relevant ones. For this request the runtime requires you read: ${missing.join(', ')} (required: ${requiredForEnforcement.join(', ')})\nCall read_skill for at least one now. Example:\n\`\`\`json\n[{"tool":"read_skill","args":{"id":"${missing[0]}"}}]\n\`\`\`\nThe skill body will be injected into context; you must then use its guidance in code.`,
-      });
-      return true;
-    }
-    return null;
+  const structureIssues = () => {
+    const rels = allRels();
+    if (!rels.length) return ['no files exist in the workspace'];
+    const check = checkStructure(workspaceDir, rels.map((rel) => ({ rel })));
+    return [...(check.issues ?? []), ...(check.warnings ?? []).map((w) => `warning: ${w}`)];
   };
 
-  // Visual QA enforcement — CODE → SEE → CRITIQUE → FIX must happen before done for complex tasks
-  let visualQaDone = false;
-  let testingDone = false;
-  const runEnforcedVisualQa = async (step) => {
-    if (complexity === 'trivial') return { ok: true, passed: true };
-    const rels = actions.filter(a => a.result && !a.result.error && (a.args.rel||a.args.path)).map(a=>({ rel: a.args.rel||a.args.path }));
-    const result = await runVisualCritique(workspaceDir, rels, spec);
-    visualQaDone = true;
-    bus.emit(EVENT.CRITIQUE, { overall: result.score, kind: 'visual-qa-enforced', notes: result.notes?.slice(0,3) });
-    if (!result.ok || result.score < 70) {
-      // Actionable critique: identify concrete properties
-      const critiqueLines = [
-        `VISUAL QA FAILED (score ${result.score}/100) — mandatory before COMPLETED. Concrete weaknesses:`,
-        ... (result.notes ?? []).slice(0,4).map(n=>`- ${n}`),
-        ... (result.fixes ?? []).slice(0,3).map(f=>`- [${f.area}] ${f.fix}`),
-        '',
-        'You must now MODIFY the code to fix the top 2 weaknesses. Be concrete:',
-        '- If hero is flat: introduce spatial layering between object, headline and background while keeping CTA readable (hero__orb + depth 40px, scrim).',
-        '- If typography weak: apply display tracking -0.025em, scale 32/48, measure <=62ch, pair display+mono.',
-        '- If composition generic: use asymmetry 7/5 split, not centered stack + bento-default.',
-        'Emit edit_file or write_file with targeted fixes, then re-verify. Do NOT emit done until visual QA passes.',
-      ];
-      transcript.push({ step, role: 'system', text: `visual QA gate: ${result.notes.slice(0,2).join('; ')}` });
-      messages.push({ role: 'user', content: critiqueLines.join('\n') });
-      try { if (stateMachine.getState() !== STATES.ITERATION) stateMachine.transition(STATES.ITERATION, { reason: 'visual QA failed', data: { visualQa: result } }); }
-      catch {}
-      return { ok: false, result };
-    }
-    stateMachine.record(STATES.VISUAL_QA, { score: result.score, ok: true });
-    return { ok: true, result };
-  };
-
-  async function runVisualCritique(workspaceDir, rels, spec) {
-    try {
-      const { readFile } = await import('node:fs/promises');
-      const { default: path } = await import('node:path');
-      const htmlRel = rels.map(r=>r.rel).find(rel=> /(^|\/)index\.html$/i.test(rel) || rel.endsWith('.html')) ?? 'index.html';
-      const fullHtml = path.resolve(workspaceDir, String(htmlRel).replace(/^\.?\//,''));
-      let html = '';
-      try { html = await readFile(fullHtml,'utf8'); } catch {}
-      let css = '';
-      for (const rel of rels.map(r=>r.rel).filter(r=>r.endsWith('.css')).slice(0,3)) {
-        try { css += '\n' + await readFile(path.resolve(workspaceDir, String(rel).replace(/^\.?\//,'')),'utf8'); } catch {}
-      }
-      if (!css) {
-        const m = html.match(/<style[\s\S]*?>([\s\S]*?)<\/style>/i);
-        if (m) css = m[1];
-      }
-      // Use existing verifiers
-      const staticV = verifyStatic({ html, css, plan });
-      const qa = visualQa({ html, css, plan, staticV, spec });
-      // Add actionable critique details
-      const actionable = actionableCritique({ html, css, plan, qa, spec });
-      return { ...qa, staticV, actionable, notes: [...(qa.notes??[]), ...actionable.notes].slice(0,6), fixes: [...(qa.fixes??[]), ...actionable.fixes].slice(0,5), ok: qa.ok && actionable.pass, score: Math.min(qa.score, actionable.score) };
-    } catch (e) { return { ok: false, score: 50, notes: ['visual QA probe failed: '+String(e?.message??e).slice(0,120)], fixes: [], score: 50 }; }
-  }
-
-  function actionableCritique({ html, css, plan, qa, spec }) {
-    const notes = [];
-    const fixes = [];
-    const c = String(css ?? '');
-    const h = String(html ?? '');
-    // hierarchy
-    if (!/<h1[^>]*class="[^"]*hero__title/.test(h) && !/--font-display/.test(c)) { notes.push('hierarchy weak: hero h1 lacks display treatment (tight tracking, large scale)'); fixes.push({ area:'hierarchy', fix:'Give hero__title display font, 48px, tracking -0.03em, text-balance, scrim layer' }); }
-    // composition
-    if (/class="[^"]*features--columns/.test(h) && (h.match(/class="[^"]*feature"/g)||[]).length >=3 && !/bento|list-with-icons|alternating/.test(JSON.stringify(plan?.sections??''))) { notes.push('composition generic: uniform 3-col cards without twist'); fixes.push({ area:'composition', fix:'Replace uniform grid with bento or alternating editorial split, add asymmetry, vary rhythm' }); }
-    // spacing
-    if (!/--space-/.test(c) || (c.match(/margin:\s*\d+px/g)||[]).length > 8) { notes.push('spacing inconsistent: not using token scale 4/8/16/24/32/48/64'); fixes.push({ area:'spacing', fix:'Replace ad-hoc px with var(--space-*) tokens only, 8pt rhythm' }); }
-    // typography
-    if (!/62ch|max-width:\s*62ch/.test(c+h) && h.length>2000) { notes.push('typography measure not constrained (prose wider than 62ch reduces readability)'); fixes.push({ area:'typography', fix:'Set prose max-width 62ch, body 16px/1.65, headings 20/24/32/48 only' }); }
-    // contrast/motion/depth
-    if (!/backdrop-filter|glass|hero__orb/.test(c+h) && spec?.tech?.depth !== 'css') { notes.push('depth missing: 3D requested but no depth layer rendered (hero flat)'); fixes.push({ area:'depth', fix:'Introduce spatial layering: hero__orb parallax layer 40px + glass scrim, CTA remains readable' }); }
-    if (!/prefers-reduced-motion/.test(c)) { notes.push('motion accessibility missing: no reduced-motion guard'); fixes.push({ area:'motion', fix:'Add @media (prefers-reduced-motion: reduce) { * {animation:none} [data-reveal]{opacity:1} }' }); }
-    const score = Math.max(0, 90 - notes.length*12 - fixes.length*4);
-    return { notes, fixes, score, pass: notes.length===0 };
-  }
-
-  bus.emit(EVENT.PHASE, { phase: 'agent' });
-  // Qwen2.5-7B history trimming + retry state
-  let consecutiveParseFailures = 0;
-
-  for (let step = 0; step < maxSteps; step += 1) {
-    // Trim history before each LLM call — Groq free tier is 8k TPM, so be aggressive
-    const isGroq = String(config?.models?.openaiCompatible?.model ?? '').includes('gpt-oss') || String(config?.models?.openaiCompatible?.baseUrl ?? '').includes('groq');
-    const budget = isGroq ? 3500 : Number(config?.runtime?.contextBudgetTokens ?? 6000);
-    const trimmedMessages = trimHistory(messages, {
-      maxTokens: budget,
-      keepLast: isGroq ? 2 : 4,
-      maxMessages: isGroq ? 6 : 10,
-    });
-    // Rate limit: Groq free tier needs spacing between calls
-    if (isGroq && step > 0) await new Promise(r => setTimeout(r, 2500));
-    // Replace messages in place if trimmed
-    if (trimmedMessages !== messages) {
-      messages.length = 0;
-      messages.push(...trimmedMessages);
-    }
+  bus.emit(EVENT.PHASE, { phase: 'implementation' });
+  for (let step = 0; step < stepBudget; step += 1) {
+    const trimmed = trimHistory(messages, { maxTokens: historyBudget, keepLast: isGroq ? 2 : 6, maxMessages: isGroq ? 6 : 14 });
+    if (trimmed !== messages) { messages.length = 0; messages.push(...trimmed); }
+    if (isGroq && step > 0) await new Promise((r) => setTimeout(r, 2500));
 
     let response;
     try {
-      response = await router.text(undefined, {
-        kind: 'code',
-        system,
-        messages,
-        maxTokens: Math.min(4096, Number(config?.runtime?.maxTokens ?? 4096)),
-        temperature: 0.35,
-        phase: 'agent',
-      });
+      response = await router.text(undefined, { kind: 'code', system, messages, liveOnly: true, maxTokens: Math.min(8192, Number(config?.runtime?.maxTokens ?? 8192)), temperature: 0.35, phase: 'agent' });
     } catch (error) {
-      logger.debug('agent LLM call failed', { error: String(error?.message ?? error) });
-      transcript.push({ step, role: 'system', text: `LLM call failed: ${String(error?.message ?? error)}` });
+      lastError = String(error?.message ?? error);
+      note(step, `model call failed: ${lastError}`);
+      bus.emit(EVENT.ERROR, { message: `model call failed: ${lastError.slice(0, 200)}` });
       break;
     }
-
     provider = response.provider;
     model = response.model;
-    const rawText = response.text || '';
+    const rawText = response.text ?? '';
     const output = parseAgentOutput(rawText);
     transcript.push({ step, role: 'assistant', think: output.think, text: rawText });
-
     if (output.think) bus.emit(EVENT.THOUGHT, { phase: 'agent', text: output.think });
 
-    // Defensive validation: if model emitted JSON but shape is wrong, retry once with error feedback
-    const toolValidation = output.calls.length ? validateToolCallsBatch(output.calls) : { ok: true };
-    if (output.calls.length && !toolValidation.ok) {
-      consecutiveParseFailures += 1;
-      if (consecutiveParseFailures <= 1) {
-        const msg = retryMessage(toolValidation.error);
-        transcript.push({ step, role: 'system', text: `parse failure — retrying: ${toolValidation.error}` });
-        messages.push({ role: 'assistant', content: compactAssistantMessage(rawText, output) });
-        messages.push({ role: 'user', content: msg });
-        bus.emit(EVENT.ERROR, { message: `tool parse failed (retry 1/1): ${toolValidation.error}` });
-        continue; // retry once with error fed back
-      } else {
-        transcript.push({ step, role: 'system', text: `parse failed twice — ending loop: ${toolValidation.error}` });
-        messages.push({ role: 'assistant', content: compactAssistantMessage(rawText, output) });
-        break;
-      }
-    }
-    if (output.calls.length && toolValidation.ok) consecutiveParseFailures = 0;
-
-    // Also handle case where rawText looks like JSON intent but parse found zero calls (malformed)
-    const looksLikeJsonAttempt = /```json|```tool|"\s*tool\s*"\s*:/i.test(rawText) && output.calls.length === 0 && output.fileWrites.length === 0 && !output.done;
-    if (looksLikeJsonAttempt) {
-      consecutiveParseFailures += 1;
-      if (consecutiveParseFailures <= 1) {
-        const parsed = parseAndValidateToolCalls(rawText);
-        const err = parsed.error ?? 'Malformed tool JSON — expected [{"tool":"...","args":{}}] with one of read_file/write_file/edit_file/list_directory/run_bash';
-        transcript.push({ step, role: 'system', text: `malformed JSON — retrying` });
-        messages.push({ role: 'assistant', content: compactAssistantMessage(rawText, output) });
+    // Validate JSON tool calls; feed back a correction once per streak.
+    const invalid = output.calls.map((c) => validateToolCall({ tool: c.tool, args: c.args })).find((v) => !v.ok);
+    const looksLikeJsonAttempt = /```json|"tool"\s*:/i.test(rawText) && !output.calls.length && !output.fileWrites.length && !output.done;
+    if (invalid || looksLikeJsonAttempt) {
+      parseFailures += 1;
+      messages.push({ role: 'assistant', content: compactAssistantMessage(rawText, output) });
+      if (parseFailures <= 2) {
+        const err = invalid?.error ?? 'malformed tool JSON — expected [{"tool":"...","args":{...}}]';
+        note(step, `tool parse failure — retrying: ${err}`);
         messages.push({ role: 'user', content: retryMessage(err) });
         continue;
       }
-    }
-
-    // Compact what the model said before storing it in history: a full HTML
-    // body would eat the whole 16k context window on the next turn.
-    messages.push({ role: 'assistant', content: compactAssistantMessage(rawText, output) });
-
-    // ---- PRE-EXECUTION SKILL GATE: prevent one-shot without expertise ----
-    if (output.fileWrites.length > 0 && needsSkillEnforcement && !hasListedSkills) {
-      const gate = enforceSkillReads(step);
-      if (gate) continue; // skip execution, nudge to list_skills
-    }
-    if (output.fileWrites.length > 0 && needsSkillEnforcement && missingRequiredSkills().length && skillsReadSet.size === 0) {
-      const gate = enforceSkillReads(step);
-      if (gate) continue;
-    }
-
-    const hasWork = output.fileWrites.length > 0 || output.calls.length > 0;
-    if (!hasWork) {
-      // No work in this turn: either it is finished, or it only talked.
-      if (output.done) {
-        // ---- STATE MACHINE GATES BEFORE COMPLETED ----
-        // 1) Skill gate
-        if (needsSkillEnforcement && missingRequiredSkills().length) {
-          const gate = enforceSkillReads(step);
-          if (gate) continue;
-        }
-        // 2) Visual QA gate (CODE → SEE → CRITIQUE → FIX) — mandatory for complex
-        if (complexity !== 'trivial' && !visualQaDone) {
-          const qa = await runEnforcedVisualQa(step);
-          if (!qa.ok) continue; // needs iteration
-        }
-        // 3) Generic detector
-        const extra = await genericProblemsForRepair(workspaceDir, actions.filter((a) => a.args?.rel).map((a) => ({ rel: a.args.rel })));
-        if (extra.length && injectRepair(step, extra)) continue; // anti-generic → fix
-        if (injectRepair(step)) continue; // verify → fix, before accepting done
-        // 4) Enforce minimum file count — prevents one-shot single HTML with everything inline
-        const rels = actions.filter(a => a.result && !a.result.error && (a.args.rel||a.args.path)).map(a=>a.args.rel||a.args.path);
-        const hasHtml = rels.some(r=>r.endsWith('.html'));
-        const hasCss = rels.some(r=>r.endsWith('.css'));
-        const hasJs = rels.some(r=>/\.m?js$/.test(r));
-        if (hasHtml && (!hasCss || !hasJs)) {
-          transcript.push({ step, role: 'system', text: `one-shot guard: missing separate css/js — hasHtml=${hasHtml} hasCss=${hasCss} hasJs=${hasJs}` });
-          messages.push({ role: 'user', content: `ONE-SHOT GUARD: Your build writes no separate CSS/JS. For this stack you MUST ship 3 files:\n- index.html (markup, <link href="styles/main.css">)\n- styles/main.css (tokens, Grid/Flexbox, @media 768px, reduced-motion)\n- scripts/main.js (behavior, null-guarded querySelector)\nYou currently have: ${rels.join(', ') || 'none'}. Write the missing file(s) now with fenced blocks, then re-emit done.` });
-          continue;
-        }
-        // 5) Iteration count guard — complex tasks must have at least 4 steps (inspect, plan, implement, visual QA)
-        if (complexity === 'complex' && step < 3) {
-          transcript.push({ step, role: 'system', text: `one-shot guard: complex task completed in ${step} steps, need >=4` });
-          messages.push({ role: 'user', content: `WORKFLOW GUARD: Complex tasks require meaningful intermediate stages (understand→inspect→skill→plan→implement→visual QA→improve). You completed in ${step+1} steps. Perform visual QA iteration: read back files, critique concrete weaknesses (hierarchy, composition, spacing, typography), improve at least one, then done.` });
-          continue;
-        }
-        // 6) State machine completion check
-        const canComplete = stateMachine.canComplete({ hasVisualQa: visualQaDone || complexity==='trivial', hasTesting: true, verificationOk: !extra.length });
-        if (!canComplete.ok && complexity !== 'trivial') {
-          transcript.push({ step, role: 'system', text: `state gate: ${canComplete.reason}` });
-          // Try to auto-advance through remaining phases if short-circuit allowed for this complexity? No, for complex we must not skip
-          // So nudge
-          messages.push({ role: 'user', content: `STATE GATE BLOCKED: ${canComplete.reason}. Current workflow: ${stateMachine.getWorkflow().join('→')}, current state: ${stateMachine.getState()}. You must complete required phases before emitting done. If you are in IMPLEMENTATION, call run_bash or read_file to verify, then iterate.` });
-          continue;
-        }
-        // Try to advance to TESTING then COMPLETED
-        try {
-          if (stateMachine.getState() === STATES.DESIGN_SPEC) stateMachine.transition(STATES.IMPLEMENTATION, { reason: 'auto-enter implementation for completion check' });
-          if ([STATES.IMPLEMENTATION, STATES.ITERATION, STATES.VISUAL_QA].includes(stateMachine.getState())) {
-            if (!visualQaDone && complexity !== 'trivial') { /* already handled */ }
-            if (stateMachine.getState() !== STATES.TESTING) stateMachine.transition(STATES.TESTING, { reason: 'pre-complete testing', data: { verification: 'mock pass' } });
-          }
-          stateMachine.transition(STATES.COMPLETED, { reason: 'agent emitted done and gates passed' });
-        } catch (e) {
-          transcript.push({ step, role: 'system', text: `state completion error: ${String(e?.message??e)}` });
-        }
-        // Mark todos completed
-        for (const t of todoManager.list()) if (t.status !== 'completed') todoManager.update(t.id, { status: 'completed' });
-        bus.emit(EVENT.PHASE, { phase: 'testing' });
-        testingDone = true;
-        finalSummary = output.summary || 'Task complete.';
-        done = true;
-        break;
-      }
-      // 7B often narrates without emitting tools — nudge it before quitting
-      if (consecutiveParseFailures < 3 && step < maxSteps - 1) {
-        const writesSoFar = actions.filter((a) => (a.tool === 'writeFile' || a.tool === 'write_file') && !a.result?.error).length;
-        const cssDone = actions.some((a) => (a.args.rel ?? a.args.path ?? '').includes('.css'));
-        const jsDone = actions.some((a) => (a.args.rel ?? a.args.path ?? '').includes('.js'));
-        consecutiveParseFailures += 1;
-        let nudge;
-        if (writesSoFar === 0) {
-          nudge = `You emitted NO file. Per WORKFLOW TURN 2 you MUST now write index.html with COMPLETE content (not empty body).\nRequired: <!DOCTYPE html><html><head><link rel="stylesheet" href="styles/main.css"></head><body><header><h1>Ember & Oak</h1></header><main><section class="hero">...</section><section>features x3</section></main><footer>...</footer><script type="module" src="scripts/main.js"></script></body></html>\nEmit file block:\n\`\`\`file:index.html\n<!DOCTYPE html>...full page...\n\`\`\`\nOR JSON write_file. Do NOT write "[wrote ...]" or "[read_file]" as plain text — those are internal logs, not tool calls.`;
-        } else if (!cssDone) {
-          nudge = `index.html done (${writesSoFar} file(s)). Next WORKFLOW TURN 3: write styles/main.css using ONLY design system values (spacing 4/8/16/24/32/48/64, type 14/16/20/24/32/48, Grid/Flexbox, @media 768px, :root colors, prefers-reduced-motion).\nEmit:\n\`\`\`file:styles/main.css\n:root{--primary:#3b2f2f;--neutral:#faf6f1;--accent:#c97a3a;--space-4:4px;...}\n.hero{display:grid;gap:32px}\n@media (max-width: 768px){.hero{grid-template-columns:1fr}}\n@media (prefers-reduced-motion: reduce){*{animation:none}}\n\`\`\`\nDo NOT emit "[wrote ...]" — emit a real file block.`;
-        } else if (!jsDone) {
-          nudge = `CSS done. Next TURN 4: write scripts/main.js (complete behavior: menu, scroll, null-guarded querySelector).\nEmit:\n\`\`\`file:scripts/main.js\nconst btn=document.querySelector(".cta"); if(btn) btn.addEventListener("click",()=>{...});\n\`\`\`\nDo NOT write "[wrote ...]" — emit a real file block.`;
-        } else {
-          nudge = `You emitted no tool calls. If build is complete and verified, emit [{"done":true,"summary":"Built ... files: index.html, styles/main.css, scripts/main.js"}]. Otherwise emit next file via file block. Do NOT write "[wrote ...]".`;
-        }
-        transcript.push({ step, role: 'system', text: `empty turn — nudging (${writesSoFar} files so far): ${nudge.slice(0, 120)}` });
-        messages.push({ role: 'user', content: nudge });
-        bus.emit(EVENT.ERROR, { message: `empty turn — nudging (${writesSoFar} files)` });
-        continue;
-      }
-      finalSummary = firstParagraph(rawText) || 'No further actions.';
-      transcript.push({ step, role: 'system', text: 'no tool calls or file blocks — ending loop' });
+      note(step, 'tool parse failed repeatedly — ending loop');
       break;
     }
-    // reset empty counter on productive turn
-    consecutiveParseFailures = 0;
+    parseFailures = 0;
+    messages.push({ role: 'assistant', content: compactAssistantMessage(rawText, output) });
 
-    const toolResults = [];
-    // Order matters: files are usually written before they are read back.
-    // Spread FIRST so the parser's own `kind` field cannot overwrite ours.
+    const hasWork = output.fileWrites.length > 0 || output.calls.length > 0;
+    if (!hasWork && !output.done) {
+      emptyTurns += 1;
+      if (emptyTurns >= 3) { note(step, 'three empty turns — ending loop'); finalSummary = firstParagraph(rawText); break; }
+      const pending = todoManager.nextPending() ?? todoManager.currentInProgress();
+      messages.push({ role: 'user', content: `That turn contained no file block and no tool call, so nothing happened. ${pending ? `Next TODO: ${pending.id} — ${pending.description}.` : 'All TODOs are progressed.'} Emit a real \`\`\`file:<path> block or a \`\`\`json tool array (or the done signal if the build is complete and reviewed).` });
+      note(step, 'empty turn — nudged');
+      continue;
+    }
+    emptyTurns = 0;
+
+    // ---- execute work items in emission order
     const ordered = [
-      ...output.fileWrites.map((write) => ({ ...write, kind: 'write' })),
-      ...output.calls.map((call) => ({ ...call, kind: 'call' })),
+      ...output.fileWrites.map((w) => ({ ...w, kind: 'write' })),
+      ...output.calls.map((c) => ({ ...c, kind: 'call' })),
     ].sort((a, b) => a.at - b.at);
-
+    const toolResults = [];
     for (const item of ordered) {
-      const tool = item.kind === 'write' ? 'writeFile' : item.tool;
-      const args = item.kind === 'write'
-        ? { rel: item.rel, content: item.content }
-        : { ...(item.args ?? {}) };
-      // Track skill discovery before execution: normalize aliases
-      const isListSkills = tool === 'listSkills' || tool === 'list_skills';
-      const isReadSkill = tool === 'readSkill' || tool === 'read_skill';
-      const result = await executeTool(tools, tool, args);
-      actions.push({ kind: 'tool', step, tool, args, result });
-      bus.emit(EVENT.TOOL_CALL, { tool, args: { rel: args.rel, id: args.id, cmd: args.cmd, path: args.path } });
-      if (result.error) {
-        bus.emit(EVENT.ERROR, { message: `${tool}: ${result.error}` });
+      const tool = item.kind === 'write' ? 'write_file' : normalizeName(item.tool);
+      const args = item.kind === 'write' ? { path: item.rel, content: item.content } : { ...(item.args ?? {}) };
+      let result;
+      if (tool === 'update_todo') {
+        result = applyTodoUpdate(todoManager, args, exists);
+      } else if (tool === 'run_qa') {
+        const qa = await runQaRound(step, 'model requested run_qa');
+        result = { ok: true, output: renderFindingsForModel(qa) };
+        if (qa.verdict === 'iterate') { try { if (stateMachine.getState() !== STATES.ITERATION) stateMachine.transition(STATES.ITERATION, { reason: 'qa iterate (model-requested)' }); } catch {} }
       } else {
+        result = await executeTool(tools, tool, args);
+      }
+      actions.push({ kind: 'tool', step, tool, args, result });
+      bus.emit(EVENT.TOOL_CALL, { tool, args: { rel: args.path ?? args.rel, id: args.id, cmd: args.command ?? args.cmd, status: args.status } });
+      if (result.error) bus.emit(EVENT.ERROR, { message: `${tool}: ${String(result.error).slice(0, 200)}` });
+      else {
         bus.emit(EVENT.TOOL_RESULT, { tool, ok: true });
-        if (tool === 'writeFile' || tool === 'write_file') bus.emit(EVENT.FILE_WRITE, { rel: args.rel ?? args.path, bytes: String(args.content ?? '').length });
-        // Update skill tracking
-        if (isListSkills && !result.error) { hasListedSkills = true; bus.emit(EVENT.SKILLS, { ids: requiredForEnforcement, discovery: true }); }
-        if (isReadSkill && !result.error) {
-          const rid = String(args.id ?? '').trim();
-          if (rid) skillsReadSet.add(rid);
-          bus.emit(EVENT.SKILLS, { ids: [...skillsReadSet], read: true });
-        }
-        // State transition on first successful write: IMPLEMENTATION
-        if ((tool === 'writeFile' || tool === 'write_file' || tool === 'edit_file' || tool === 'patchFile') && !result.error) {
-          if ([STATES.DESIGN_SPEC, STATES.PLANNING, STATES.SKILL_SELECTION].includes(stateMachine.getState())) {
-            try { stateMachine.transition(STATES.IMPLEMENTATION, { reason: `first write ${args.rel ?? args.path}`, data: { writes: 1 } }); bus.emit(EVENT.PHASE, { phase: 'implementation' }); } catch {}
-          } else if (stateMachine.getState() === STATES.IMPLEMENTATION) {
-            bus.emit(EVENT.PHASE, { phase: 'implementation-continue' });
-          }
-          // Todo progression: mark current pending task with matching file, or first pending
+        if (tool === 'read_skill' && args.id) { skillsReadSet.add(String(args.id)); if (!skills.ids.includes(String(args.id)) && registry.has(String(args.id))) { skills.ids.push(String(args.id)); skills.loaded.push({ id: String(args.id), tokens: registry.get(String(args.id))?.tokens ?? 0, source: 'read_skill' }); } }
+        if (['write_file', 'edit_file'].includes(tool)) {
+          if ([STATES.DESIGN_SPEC, STATES.PLANNING, STATES.SKILL_SELECTION].includes(stateMachine.getState())) { try { stateMachine.transition(STATES.IMPLEMENTATION, { reason: `first write ${args.path}` }); } catch {} }
+          else if ([STATES.VISUAL_QA, STATES.TESTING].includes(stateMachine.getState())) { try { stateMachine.transition(STATES.ITERATION, { reason: `edit after QA: ${args.path}` }); } catch {} }
           try {
-            const rel = String(args.rel ?? args.path ?? '');
-            // Find pending todo that lists this file
-            let target = todoManager.list().find(t => t.status === 'pending' && t.files?.some(f => rel.includes(f) || f.includes(rel)));
-            if (!target) target = todoManager.nextPending();
-            if (!target) target = todoManager.currentInProgress();
-            if (target && target.status === 'pending') { todoManager.start(target.id); bus.emit(EVENT.STEP_START, { id: target.id, title: target.description }); }
-            // If we have written the expected files for current in-progress, mark it completed and move next to in_progress
-            const inProg = todoManager.currentInProgress();
-            if (inProg) {
-              const expected = inProg.files ?? [];
-              const relsSoFar = actions.filter(a=>a.result && !a.result.error && (a.args.rel||a.args.path)).map(a=>a.args.rel||a.args.path);
-              const allWritten = expected.length === 0 || expected.every(f => relsSoFar.some(r=> r.includes(f) || f.includes(r) || r===f));
-              // Only auto-complete if we have at least one write and either no specific files or files covered
-              if (expected.length === 0 || allWritten) {
-                // For spec iterations, we consider structure phase done after html+css, etc. Use heuristic: at least 1 file per todo
-                // Delay completing until next turn or visual QA? For now keep in_progress until explicit visual QA, but mark progressive
-                // We'll auto-advance when expected files written and not generic failures pending
-                if (relsSoFar.length >= 2 && expected.length > 0) {
-                  // Don't auto-complete last polish todo before visual QA
-                  if (inProg.id !== todoManager.list().slice(-1)[0]?.id) {
-                    todoManager.complete(inProg.id); bus.emit(EVENT.STEP_END, { id: inProg.id, status: 'completed' });
-                    const next = todoManager.nextPending();
-                    if (next) { todoManager.start(next.id); bus.emit(EVENT.STEP_START, { id: next.id, title: next.description }); }
-                  }
-                }
-              }
-            }
+            const rel = String(args.path ?? '');
+            const target = todoManager.list().find((t) => t.status === 'pending' && (t.files ?? []).some((f) => rel === f || rel.endsWith(f) || f.endsWith(rel)));
+            if (target && (target.dependencies ?? []).every((d) => todoManager.get(d)?.status === 'completed')) todoManager.start(target.id);
           } catch {}
         }
       }
       toolResults.push({ tool, args, result });
       transcript.push({ step, role: 'tool', tool, args: summarizeArgs(tool, args), result: summarizeResult(result) });
     }
-
     onStep?.({ step, think: output.think, calls: output.calls, writes: output.fileWrites, todos: todoManager.toBusEvents(), state: stateMachine.getState(), skillsRead: [...skillsReadSet] });
-    // Inject state + todo summary into tool results feedback
-    const stateLine = `STATE: ${stateMachine.getState()} (complexity=${complexity}) | TODO: ${todoManager.stats().completed}/${todoManager.stats().total} completed | Skills read: ${[...skillsReadSet].join(', ')||'none'} | Required: ${requiredForEnforcement.join(', ')||'none'} | Next TODO: ${todoManager.nextPending()?.description ?? todoManager.currentInProgress()?.description ?? 'none'}`;
-    messages.push({ role: 'user', content: `${formatToolResults(toolResults)}\n\n${stateLine}\nContinue per WORKFLOW. If build complete, ensure VISUAL_QA passes before done.` });
-
-    // A model may write its files AND declare done in the same turn: run the
-    // work first, report the results, then honour the done signal (this used to
-    // skip the writes entirely).
-    if (output.done) {
-      // Same gates as hasWork=false done case
-      if (needsSkillEnforcement && missingRequiredSkills().length) {
-        const gate = enforceSkillReads(step);
-        if (gate) continue;
-      }
-      if (complexity !== 'trivial' && !visualQaDone) {
-        const qa = await runEnforcedVisualQa(step);
-        if (!qa.ok) continue;
-      }
-      const extra = await genericProblemsForRepair(workspaceDir, actions.filter((a) => a.args?.rel).map((a) => ({ rel: a.args.rel || a.args.path })));
-      if (extra.length && injectRepair(step, extra.map((e) => `anti-generic: ${e}`))) continue;
-      if (injectRepair(step)) continue; // verify → fix, before accepting done
-      const rels = actions.filter(a => a.result && !a.result.error && (a.args.rel||a.args.path)).map(a=>a.args.rel||a.args.path);
-      const hasHtml = rels.some(r=>r.endsWith('.html'));
-      const hasCss = rels.some(r=>r.endsWith('.css'));
-      const hasJs = rels.some(r=>/\.m?js$/.test(r));
-      if (hasHtml && (!hasCss || !hasJs)) {
-        transcript.push({ step, role: 'system', text: `one-shot guard: missing separate css/js — hasHtml=${hasHtml} hasCss=${hasCss} hasJs=${hasJs}` });
-        messages.push({ role: 'user', content: `ONE-SHOT GUARD: Your build writes no separate CSS/JS. For this stack you MUST ship 3 files:\n- index.html (markup, <link href="styles/main.css">)\n- styles/main.css (tokens, Grid/Flexbox, @media 768px, reduced-motion)\n- scripts/main.js (behavior, null-guarded querySelector)\nYou currently have: ${rels.join(', ') || 'none'}. Write the missing file(s) now with fenced blocks, then re-emit done.` });
-        continue;
-      }
-      if (complexity === 'complex' && step < 3) {
-        transcript.push({ step, role: 'system', text: `one-shot guard: complex task completed in ${step} steps, need >=4` });
-        messages.push({ role: 'user', content: `WORKFLOW GUARD: Complex tasks require meaningful intermediate stages (understand→inspect→skill→plan→implement→visual QA→improve). You completed in ${step+1} steps. Perform visual QA iteration: read back files, critique concrete weaknesses (hierarchy, composition, spacing, typography), improve at least one, then done.` });
-        continue;
-      }
-      const canComplete = stateMachine.canComplete({ hasVisualQa: visualQaDone || complexity==='trivial', hasTesting: true, verificationOk: !extra.length });
-      if (!canComplete.ok && complexity !== 'trivial') {
-        transcript.push({ step, role: 'system', text: `state gate: ${canComplete.reason}` });
-        messages.push({ role: 'user', content: `STATE GATE BLOCKED: ${canComplete.reason}. Current workflow: ${stateMachine.getWorkflow().join('→')}, current state: ${stateMachine.getState()}. You must complete required phases before emitting done.` });
-        continue;
-      }
-      try {
-        if ([STATES.DESIGN_SPEC, STATES.PLANNING].includes(stateMachine.getState())) stateMachine.transition(STATES.IMPLEMENTATION, { reason: 'auto-enter implementation for done' });
-        if ([STATES.IMPLEMENTATION, STATES.ITERATION, STATES.VISUAL_QA].includes(stateMachine.getState())) {
-          if (stateMachine.getState() !== STATES.TESTING) stateMachine.transition(STATES.TESTING, { reason: 'pre-complete testing', data: { verification: 'mock pass' } });
-        }
-        stateMachine.transition(STATES.COMPLETED, { reason: 'agent emitted done and gates passed' });
-      } catch {}
-      for (const t of todoManager.list()) if (t.status !== 'completed') try { todoManager.complete(t.id); } catch {}
-      bus.emit(EVENT.PHASE, { phase: 'testing' });
-      testingDone = true;
-      finalSummary = output.summary || 'Task complete.';
-      done = true;
-      break;
+    if (toolResults.length) {
+      const stateLine = `STATE ${stateMachine.getState()} | TODO ${todoManager.stats().completed}/${todoManager.stats().total} done | next: ${todoManager.nextPending()?.id ?? todoManager.currentInProgress()?.id ?? 'none'}`;
+      messages.push({ role: 'user', content: `${formatToolResults(toolResults)}\n${stateLine}` });
     }
+
+    if (!output.done) continue;
+
+    // ---- DONE requested: gates
+    const rels = writtenRels();
+    if (!rels.length && brief.mode === 'create') {
+      note(step, 'done without any files — rejected');
+      messages.push({ role: 'user', content: 'You emitted done but no file has been written. Implement the TODOs with real file blocks first.' });
+      continue;
+    }
+    // 1. structure (workspace-wide)
+    const sIssues = structureIssues().filter((i) => !i.startsWith('warning:'));
+    if (sIssues.length && repairPasses < MAX_REPAIR) {
+      repairPasses += 1;
+      note(step, `structure repair ${repairPasses}: ${sIssues.join('; ')}`);
+      try { if (stateMachine.getState() !== STATES.ITERATION) stateMachine.transition(STATES.ITERATION, { reason: 'structure repair' }); } catch {}
+      messages.push({ role: 'user', content: `STRUCTURE CHECK found problems:\n${sIssues.map((i) => `- ${i}`).join('\n')}\nFix them with real file blocks / edits, then emit done again.` });
+      continue;
+    }
+    // 2. visual QA (render → critique → iterate)
+    const lastQa = qaRounds.at(-1);
+    const needsQa = !lastQa || (lastQa.verdict === 'iterate' && lastQa.step < step);
+    if (needsQa && qaRounds.length < maxQaRounds) {
+      const qa = await runQaRound(step, lastQa ? 'iteration re-check' : 'pre-completion visual QA');
+      if (qa.verdict === 'iterate' && qaRounds.length < maxQaRounds) {
+        bus.emit(EVENT.PHASE, { phase: 'iteration', round: qa.round });
+        try { if (stateMachine.getState() !== STATES.ITERATION) stateMachine.transition(STATES.ITERATION, { reason: `visual QA ${qa.score}` }); } catch {}
+        bus.emit(EVENT.IMPROVE, { iteration: qa.round, issues: qa.findings.length, score: qa.score });
+        messages.push({ role: 'user', content: `${renderFindingsForModel(qa)}\n\nFix the weaknesses above with targeted edits (edit_file or full rewrites where structural). Keep everything that works. Then emit done again.` });
+        continue;
+      }
+    }
+    // 3. testing
+    bus.emit(EVENT.PHASE, { phase: 'testing' });
+    try { if (![STATES.TESTING].includes(stateMachine.getState())) stateMachine.transition(STATES.TESTING, { reason: 'pre-completion tests' }); } catch {}
+    testing = runTests({ workspaceDir, rels: allRels(), inspection, config });
+    bus.emit(EVENT.VERIFY, { ok: testing.ok, summary: testing.issues.join('; ') || 'tests passed', issues: testing.issues, warnings: testing.warnings });
+    if (!testing.ok && repairPasses < MAX_REPAIR) {
+      repairPasses += 1;
+      note(step, `test repair ${repairPasses}: ${testing.issues.join('; ')}`);
+      try { stateMachine.transition(STATES.ITERATION, { reason: 'tests failed' }); } catch {}
+      messages.push({ role: 'user', content: `TESTS FAILED:\n${testing.issues.map((i) => `- ${i}`).join('\n')}\nFix them, then emit done again.` });
+      continue;
+    }
+    // 4. TODO completeness
+    const open = todoManager.list().filter((t) => !['completed', 'cancelled'].includes(t.status));
+    for (const t of open) {
+      const missing = todoManager.missingFiles(t.id, exists);
+      if (!missing.length && (t.files ?? []).length) { try { for (const d of t.dependencies ?? []) if (todoManager.get(d)?.status !== 'completed') todoManager.update(d, { status: 'completed', note: 'auto: files present' }); todoManager.update(t.id, { status: 'completed', note: 'auto: files present at completion' }); } catch {} }
+    }
+    const stillOpen = todoManager.list().filter((t) => !['completed', 'cancelled'].includes(t.status) && t.id !== 'QA');
+    const qaTodo = todoManager.get('QA') ?? todoManager.list().find((t) => /visual qa|critique/i.test(t.description));
+    if (qaTodo && qaTodo.status !== 'completed') { try { for (const d of qaTodo.dependencies ?? []) if (todoManager.get(d)?.status !== 'completed') todoManager.update(d, { status: 'completed', note: 'auto: completed at QA' }); todoManager.update(qaTodo.id, { status: 'completed', note: qaRounds.at(-1) ? `visual QA ${qaRounds.at(-1).verdict} ${qaRounds.at(-1).score}` : 'visual QA not available' }); } catch {} }
+    if (stillOpen.length && todoNudges < 1) {
+      todoNudges += 1;
+      note(step, `open TODOs at done: ${stillOpen.map((t) => t.id).join(', ')}`);
+      messages.push({ role: 'user', content: `These TODOs are still open: ${stillOpen.map((t) => `${t.id} (${t.status}) — ${t.description}`).join('; ')}. Either finish them now (file blocks/edits) and mark them completed with update_todo, or mark them blocked with a reason. Then emit done again.` });
+      continue;
+    }
+    for (const t of stillOpen) { try { todoManager.block(t.id, 'left open at completion'); } catch {} }
+    // 5. state machine completion
+    const finalQa = qaRounds.at(-1);
+    const gate = stateMachine.canComplete({ hasVisualQa: Boolean(finalQa), hasTesting: Boolean(testing), verificationOk: Boolean(testing?.ok) });
+    if (!gate.ok) note(step, `state gate: ${gate.reason}`);
+    try {
+      if ([STATES.IMPLEMENTATION, STATES.ITERATION, STATES.VISUAL_QA].includes(stateMachine.getState())) stateMachine.transition(STATES.TESTING, { reason: 'tests ran' });
+      stateMachine.transition(STATES.COMPLETED, { reason: gate.ok ? 'all gates passed' : `completed with caveats: ${gate.reason}` });
+    } catch (error) { note(step, `state completion: ${String(error?.message ?? error)}`); }
+    finalSummary = output.summary || 'Build complete.';
+    done = true;
+    break;
   }
 
+  // ---- result
   const writes = actions
-    .filter((action) => ['writeFile', 'write_file', 'edit_file', 'patchFile'].includes(action.tool) && action.result && !action.result.error && (action.args.rel || action.args.path))
-    .map((action) => {
-      const meta = action.result?.result ?? {};
-      const rel = action.args.rel ?? action.args.path ?? '';
-      const content = String(action.args.content ?? action.args.text ?? '');
-      return {
-        rel,
-        mode: meta.mode || 'create',
-        bytes: meta.bytes ?? content.length,
-        lines: meta.lines ?? content.split(/\r?\n/).length,
-      };
-    });
-
-  // Ensure any remaining todos are reflect current completion
-  if (done) {
-    for (const t of todoManager.list()) if (t.status !== 'completed') try { todoManager.complete(t.id); } catch {}
-  } else if (writes.length > 0) {
-    // Mark implementation progressed but not done
-    const inProg = todoManager.currentInProgress();
-    if (inProg && stateMachine.getState() === STATES.IMPLEMENTATION) {
-      // keep in progress; if we have writes but no further QA, signal needs-fix
-    }
-  }
-
-  const status = writes.length > 0 ? (done ? 'done' : 'needs-fix') : 'empty';
-  if (!done && status !== 'empty' && !testingDone) {
-    // If loop ended without done, move to FAILED if not trivial? Keep needs-fix
-    try { if (stateMachine.getState() !== STATES.COMPLETED) stateMachine.force(STATES.FAILED, 'loop ended without done'); } catch {}
-  }
-  bus.emit(EVENT.RUN_END, { status, files: writes.length });
-
-  // Combine both skill read naming variants
-  const skillsRead = [...new Set([
-    ...actions.filter((action) => (action.tool === 'readSkill' || action.tool === 'read_skill') && !action.result?.error).map((action) => action.args.id ?? action.args.skill ?? action.args.name).filter(Boolean),
-    ...skillsReadSet,
-  ])];
-
-  return {
-    status,
-    done,
-    writes,
-    actions,
-    transcript,
-    provider,
-    model,
-    summary: finalSummary,
-    stepCount: actions.length,
-    inspection,
-    skills: { ids: skills.ids, summary: skills.summary },
-    taskType,
-    skillsRead,
-    todos: todoManager.toBusEvents(),
-    todoStats: todoManager.stats(),
-    state: stateMachine.snapshot(),
-    spec,
-    visualQaDone,
-    testingDone,
+    .filter((a) => ['write_file', 'edit_file'].includes(a.tool) && a.result && !a.result.error && (a.args.path ?? a.args.rel))
+    .map((a) => { const meta = a.result?.result ?? {}; const rel = a.args.path ?? a.args.rel; const content = String(a.args.content ?? ''); return { rel, mode: meta.mode || (a.tool === 'edit_file' ? 'update' : 'create'), bytes: meta.bytes ?? content.length, lines: meta.lines ?? (content ? content.split(/\r?\n/).length : undefined) }; });
+  const dedupedWrites = [...new Map(writes.map((w) => [w.rel, w])).values()];
+  const finalQa = qaRounds.at(-1);
+  let status;
+  if (done) status = (testing?.ok !== false && (!finalQa || finalQa.verdict === 'pass' || !finalQa.rendered)) ? 'done' : 'needs-fix';
+  else status = dedupedWrites.length ? 'needs-fix' : (lastError ? 'failed' : 'empty');
+  if (!done) { try { if (stateMachine.getState() !== STATES.COMPLETED) stateMachine.force(STATES.FAILED, lastError ? `model failure: ${lastError.slice(0, 120)}` : 'loop ended without done'); } catch {} }
+  bus.emit(EVENT.RUN_END, { status, files: dedupedWrites.length, qa: finalQa?.score, rendered: finalQa?.rendered });
+  const blockedTodos = todoManager.blocked().map((t) => `${t.id}: ${t.description}${t.blockReason ? ` (${t.blockReason})` : ''}`);
+  const report = {
+    mode: brief.mode, complexity, taskType, status, provider, model,
+    skills: { method: skills.method, loaded: skills.loaded.map((l) => l.id), required: skills.required, readOnDemand: [...skillsReadSet], skipped: skills.skipped, catalogueSize: skills.catalogueSize, tech: skills.tech },
+    plan: { source: planSource, todos: todoManager.stats(), ensured, warnings: planWarnings, blocked: blockedTodos },
+    spec: { source: spec.source, depth: spec.tech?.depth, animation: spec.tech?.animation },
+    qa: { rounds: qaRounds.length, rendered: Boolean(finalQa?.rendered), method: finalQa?.method, score: finalQa?.score, verdict: finalQa?.verdict, screenshots: finalQa?.screenshots ?? [], history: qaRounds.map((r) => ({ round: r.round, score: r.score, verdict: r.verdict, findings: r.findings.length, rendered: r.rendered })), unrenderedReason: finalQa && !finalQa.rendered ? finalQa.reason_unrendered : undefined },
+    testing: testing ? { ok: testing.ok, issues: testing.issues, warnings: testing.warnings.slice(0, 8) } : { ok: false, issues: ['tests did not run (loop ended before completion)'], warnings: [] },
+    files: dedupedWrites.map((w) => w.rel),
+    steps: actions.length,
     ms: Date.now() - startedAt,
+    lastError,
+  };
+  return {
+    status, done, writes: dedupedWrites, actions, transcript, provider, model,
+    summary: finalSummary || (lastError ? `stopped: ${lastError.slice(0, 160)}` : 'loop ended without the done signal'),
+    stepCount: actions.length, inspection, taskType, complexity, mode: brief.mode,
+    skills: { ids: skills.ids, loaded: skills.loaded, method: skills.method, required: skills.required, selection: skills.selection, tech: skills.tech, summary: skills.summary },
+    skillsRead: [...skillsReadSet],
+    todos: todoManager.toBusEvents(), todoStats: todoManager.stats(),
+    state: stateMachine.snapshot(), spec, planSource, planWarnings,
+    visualQa: { rounds: qaRounds, rendered: Boolean(finalQa?.rendered), method: finalQa?.method, final: finalQa, screenshots: finalQa?.screenshots ?? [] },
+    visualQaDone: qaRounds.length > 0, testingDone: Boolean(testing), testing,
+    report, lastError, ms: Date.now() - startedAt,
   };
 }
 
-/* ------------------------------------------------------------------ parsing */
+function kickoffMessage({ brief, todoManager, inspection }) {
+  const lines = [];
+  lines.push(brief.mode === 'refine' ? 'Begin the refinement. Read the files you will touch first, then make targeted edits.' : `Begin implementation${inspection?.isEmpty ? ' in the empty workspace' : ''}. Start with the first TODO.`);
+  lines.push('', 'TODOS:', todoManager.render());
+  return lines.join('\n');
+}
 
-/**
- * Parse the agent's turn into work items, preserving emission order.
- *
- * Understands both protocols at once:
- *   - ```file:rel ... ```             → writeFile
- *   - ```json [{"tool":...}]```       → tool calls (incl. done)
- *
- * @returns {{think: string, fileWrites: Array, calls: Array, done: boolean, summary: string}}
- */
+function applyTodoUpdate(todoManager, args, exists) {
+  const id = String(args.id ?? '').trim();
+  const status = String(args.status ?? '').trim();
+  const todo = todoManager.get(id);
+  if (!todo) return { error: `unknown todo "${id}". Known: ${todoManager.list().map((t) => t.id).join(', ')}` };
+  if (!['in_progress', 'completed', 'blocked'].includes(status)) return { error: 'status must be in_progress | completed | blocked' };
+  if (status === 'completed') {
+    const missing = todoManager.missingFiles(id, exists);
+    if (missing.length) return { error: `cannot complete ${id}: files not written yet — ${missing.join(', ')}` };
+    if (/visual qa|critique/i.test(todo.description) || id === 'QA') return { error: `${id} is completed by the runtime when visual QA passes — call run_qa or emit done` };
+  }
+  try {
+    if (status === 'in_progress' || status === 'completed') for (const dep of todo.dependencies ?? []) { const d = todoManager.get(dep); if (d && d.status !== 'completed' && status === 'completed') todoManager.update(dep, { status: 'completed', note: `auto: predecessor of ${id}` }); }
+    todoManager.update(id, { status, note: args.note });
+    return { ok: true, output: `todo ${id} → ${status} (${todoManager.stats().completed}/${todoManager.stats().total} completed)` };
+  } catch (error) {
+    return { error: String(error?.message ?? error) };
+  }
+}
+
+/* ---------------------------------------------------------------- parsing ---- */
+
 export function parseAgentOutput(text) {
   const raw = String(text ?? '');
   const items = [];
-
-  const fileRe = new RegExp(FILE_BLOCK_SOURCE, FILE_BLOCK_FLAGS);
+  const fileRe = new RegExp(FILE_BLOCK_SOURCE, 'gmi');
   let match;
   while ((match = fileRe.exec(raw)) !== null) {
     const rel = String(match[1] ?? '').trim().replace(/^[./\\]+/, '');
     const content = String(match[2] ?? '').replace(/\r?\n$/, '');
     if (rel && content.trim()) items.push({ at: match.index, type: 'file', rel, content });
   }
-  // Fallback: heading + fenced block (### index.html + ```html) — common 7B pattern, more forgiving than file:
-  if (fileRe.lastIndex === 0 || items.filter((i) => i.type === 'file').length === 0) {
-    const headingRe = new RegExp(HEADING_BLOCK_SOURCE, HEADING_BLOCK_FLAGS);
+  if (!items.some((i) => i.type === 'file')) {
+    const headingRe = new RegExp(HEADING_BLOCK_SOURCE, 'gmi');
     while ((match = headingRe.exec(raw)) !== null) {
       const rel = String(match[1] ?? '').trim().replace(/^[./\\]+/, '').replace(/^File:\s*/i, '').replace(/[`*_]/g, '').trim();
       const content = String(match[2] ?? '').replace(/\r?\n$/, '');
-      // avoid double-claiming if already have a file at same index
-      if (items.some((item) => item.type === 'file' && Math.abs(item.at - match.index) < 5)) continue;
       if (rel && content.trim() && rel.includes('.')) items.push({ at: match.index, type: 'file', rel, content });
     }
   }
-
-  const jsonRe = new RegExp(JSON_BLOCK_SOURCE, JSON_BLOCK_FLAGS);
+  const jsonRe = new RegExp(JSON_BLOCK_SOURCE, 'gmi');
   while ((match = jsonRe.exec(raw)) !== null) {
-    // A file block also starts with ``` — skip anything we already claimed.
     if (items.some((item) => item.type === 'file' && match.index >= item.at && match.index < item.at + 8)) continue;
     const parsed = extractJson(match[1]);
     if (!parsed.ok) continue;
     items.push({ at: match.index, type: 'calls', entries: normalizeEntries(parsed.value) });
   }
-
   items.sort((a, b) => a.at - b.at);
-
   const fileWrites = [];
   const calls = [];
   let done = false;
   let summary = '';
-
   for (const item of items) {
     if (item.type === 'file') { fileWrites.push(item); continue; }
     for (const entry of item.entries) {
       if (!entry) continue;
-      if (entry.done === true) {
-        done = true;
-        summary = String(entry.summary ?? '').trim();
-        continue;
-      }
+      if (entry.done === true) { done = true; summary = String(entry.summary ?? '').trim(); continue; }
       const tool = typeof entry.tool === 'string' ? entry.tool : (typeof entry.name === 'string' ? entry.name : '');
       if (!tool) continue;
       calls.push({ at: item.at, tool, args: entry.args ?? entry.arguments ?? {} });
     }
   }
-
   return { think: firstParagraph(raw.split('```')[0]), fileWrites, calls, done, summary };
 }
 
-/** Always hand back an array, and tolerate a single object (a 7B often emits one). */
 function normalizeEntries(value) {
   if (Array.isArray(value)) return value;
   if (value && typeof value === 'object') {
@@ -781,190 +637,98 @@ function normalizeEntries(value) {
   return [];
 }
 
-/**
- * Parse tool calls / done signal from an LLM text response.
- * Kept as a named export for tests and for callers that only need JSON tools.
- */
+/** JSON-only tool call parser (kept for tests and simple callers). */
 export function parseToolCalls(text) {
   const trimmed = String(text ?? '').trim();
   const fenced = extractCodeBlock(trimmed, ['json', 'jsonc', 'tool_calls', 'tools']);
   let parsed = extractJson(fenced);
   if (!parsed.ok && fenced !== trimmed) parsed = extractJson(trimmed);
   if (!parsed.ok) return { calls: [], done: false, summary: '' };
-
   const entries = normalizeEntries(parsed.value);
   const doneEntry = entries.find((entry) => entry?.done === true);
   if (doneEntry) return { calls: [], done: true, summary: doneEntry.summary || '' };
-
   const calls = entries
     .filter((entry) => entry && typeof (entry.tool ?? entry.name) === 'string')
     .map((entry) => ({ tool: entry.tool ?? entry.name, args: entry.args ?? entry.arguments ?? {} }));
   return { calls, done: false, summary: '' };
 }
 
-/* ------------------------------------------------------------------ helpers */
+/* ---------------------------------------------------------------- helpers ---- */
 
-/** Positional signatures — supports BOTH qwen minimal names and legacy aliases. */
+const NAME_ALIASES = {
+  readFile: 'read_file', listFiles: 'list_directory', writeFile: 'write_file', patchFile: 'edit_file', exec: 'run_bash', readSkill: 'read_skill', listSkills: 'list_skills', updateTodo: 'update_todo', runQa: 'run_qa', visual_qa: 'run_qa',
+};
+function normalizeName(tool) { const t = String(tool ?? '').trim(); return NAME_ALIASES[t] ?? t; }
+
 const TOOL_ARG_MAP = {
-  // qwen minimal (canonical for 7B)
   read_file: (args) => [args.path ?? args.rel ?? args.file],
   list_directory: (args) => [args.path ?? args.prefix ?? ''],
   write_file: (args) => [args.path ?? args.rel ?? args.file, args.content ?? args.text ?? ''],
   edit_file: (args) => [args.path ?? args.rel ?? args.file, args.edits ?? args.patches ?? []],
-  run_bash: (args) => [args.command ?? args.cmd ?? args.cmd, args.args ?? args.arguments ?? [], { timeoutMs: args.timeoutMs }],
+  run_bash: (args) => [args.command ?? args.cmd, args.args ?? args.arguments ?? [], { timeoutMs: args.timeoutMs }],
   list_skills: () => [],
   read_skill: (args) => [args.id ?? args.skill ?? args.name],
-  // legacy aliases (still accepted if model emits old names)
-  readFile: (args) => [args.rel ?? args.path ?? args.file],
-  listFiles: (args) => [args.prefix ?? args.path ?? ''],
-  writeFile: (args) => [args.rel ?? args.path ?? args.file, args.content ?? args.text ?? ''],
-  patchFile: (args) => [args.rel ?? args.path ?? args.file, args.patches ?? args.edits ?? []],
-  exec: (args) => [args.cmd ?? args.command, args.args ?? args.arguments ?? [], { timeoutMs: args.timeoutMs }],
-  readSkill: (args) => [args.id ?? args.skill ?? args.name],
-  listSkills: () => [],
 };
 
-// Validate a batch of calls before executing — returns first error
-function validateToolCallsBatch(calls) {
-  for (const c of calls ?? []) {
-    const v = validateToolCall({ tool: c.tool, args: c.args });
-    if (!v.ok) return v;
-  }
-  return { ok: true };
-}
-
-/**
- * Execute a single tool call against the tool context.
- * Awaited because `exec` resolves asynchronously.
- */
 async function executeTool(tools, name, args = {}) {
   const fn = tools[name];
-  if (typeof fn !== 'function') return { error: `unknown tool: ${name}` };
   const mapper = TOOL_ARG_MAP[name];
-  if (!mapper) return { error: `tool not callable by the agent: ${name}` };
+  if (typeof fn !== 'function' || !mapper) return { error: `unknown tool: ${name}` };
   try {
     let result = fn(...mapper(args));
     if (result && typeof result.then === 'function') result = await result;
     if (result === undefined || result === null) return { ok: true, output: 'ok' };
     if (typeof result === 'string') return { ok: true, output: result };
-    if (Array.isArray(result)) return { ok: true, output: JSON.stringify(result).slice(0, 4000) };
-    return { ok: true, output: JSON.stringify(result).slice(0, 4000), result };
+    if (Array.isArray(result)) return { ok: true, output: JSON.stringify(result).slice(0, 6000) };
+    return { ok: true, output: JSON.stringify(result).slice(0, 6000), result };
   } catch (error) {
     return { error: String(error?.message ?? error) };
   }
 }
 
-/** Format tool results as a user message the LLM can read. */
 function formatToolResults(results) {
   const lines = ['Tool results:'];
   for (const entry of results) {
-    const argSummary = JSON.stringify(entry.args ?? {}).slice(0, 160);
+    const rel = entry.args.path ?? entry.args.rel ?? '';
     let text;
     if (entry.result?.error) text = `ERROR: ${entry.result.error}`;
+    else if (entry.tool === 'write_file') text = `wrote ${rel} (${String(entry.args.content ?? '').length} chars)`;
+    else if (entry.tool === 'edit_file') text = `edited ${rel}`;
+    else if (entry.tool === 'read_file') text = String(entry.result?.output ?? '').slice(0, 12000);
+    else if (entry.tool === 'read_skill') text = String(entry.result?.output ?? '').slice(0, 9000);
     else text = String(entry.result?.output ?? 'ok');
-    const rel = entry.args.rel ?? entry.args.path ?? '';
-    if ((entry.tool === 'writeFile' || entry.tool === 'write_file') && !entry.result?.error) text = `SUCCESS: wrote file ${rel}`;
-    if ((entry.tool === 'edit_file' || entry.tool === 'patchFile') && !entry.result?.error) text = `SUCCESS: edited file ${rel}`;
-    if ((entry.tool === 'read_file' || entry.tool === 'readFile') && !entry.result?.error) text = String(entry.result?.output ?? '').slice(0, 1500);
-    if (text.length > 3500) text = `${text.slice(0, 3500)}\n... [truncated]`;
-    lines.push(`TOOL ${entry.tool} args=${argSummary}`);
-    lines.push(text);
-    lines.push('---');
+    if (text.length > 12000) text = `${text.slice(0, 12000)}\n... [truncated]`;
+    lines.push(`[${entry.tool}${rel ? ` ${rel}` : entry.args.id ? ` ${entry.args.id}` : ''}] ${text}`);
   }
-  lines.push('Continue ONE step at a time. Next step per WORKFLOW, or emit done if build is complete and verified. Do not write log lines like "[wrote ...]" — emit a real file block.');
   return lines.join('\n');
 }
 
 function summarizeArgs(tool, args) {
   const out = {};
-  for (const key of ['rel', 'path', 'id', 'prefix', 'cmd']) if (args?.[key] !== undefined) out[key] = args[key];
+  for (const key of ['path', 'rel', 'id', 'command', 'status']) if (args?.[key] !== undefined) out[key] = args[key];
   if (args?.content !== undefined) out.bytes = String(args.content).length;
-  if (tool === 'patchFile') out.patches = (args?.patches ?? []).length;
+  if (tool === 'edit_file') out.edits = (args?.edits ?? []).length;
   return out;
 }
 
 function summarizeResult(result) {
   if (result?.error) return { error: result.error };
   const output = String(result?.output ?? '');
-  return { bytes: output.length, preview: output.slice(0, 200) };
+  return { bytes: output.length, preview: output.slice(0, 160) };
 }
 
-/** Keep history small: prose only — file receipts are in Tool results (user role), not assistant, to avoid mimicry */
 function compactAssistantMessage(rawText, output) {
   const parts = [];
   if (output.think) parts.push(output.think);
-  // Do not echo file writes here — they are already in the following Tool results user message.
-  // Previously we echoed "[wrote ...]" and model copied it as if it were a tool call.
+  const writes = output.fileWrites.map((w) => w.rel);
+  if (writes.length) parts.push(`(wrote ${writes.join(', ')})`);
+  if (output.calls.length) parts.push(`(called ${output.calls.map((c) => c.tool).join(', ')})`);
+  if (output.done) parts.push('(emitted done)');
   if (!parts.length) parts.push(String(rawText ?? '').split(/```/)[0].trim().slice(0, 500) || '[no output]');
-  return parts.join('\n').slice(0, 3000);
+  return parts.join('\n').slice(0, 2500);
 }
 
-/** First non-empty, non-heading line of a block of text. */
 function firstParagraph(text) {
-  const line = String(text ?? '')
-    .split(/\r?\n/)
-    .map((entry) => entry.trim())
-    .find((entry) => entry.length > 0);
+  const line = String(text ?? '').split(/\r?\n/).map((entry) => entry.trim()).find((entry) => entry.length > 0);
   return (line ?? '').slice(0, 600);
-}
-
-/** Build the user message that kicks off the agent. */
-function buildUserMessage(request, inspection, skills, spec) {
-  const skillNames = skills.ids.length ? skills.ids.join(', ') : 'none';
-  const files = inspection.files?.map((file) => file.rel).slice(0, 30);
-  const lines = [
-    `REQUEST: ${request}`,
-    '',
-    `WORKSPACE: ${inspection.root || process.cwd()}`,
-    `Framework: ${inspection.framework || 'none'} | Styling: ${inspection.styling || 'plain-css'} | Empty: ${inspection.isEmpty ? 'yes' : 'no'}`,
-    `Libraries: ${inspection.libraries?.length ? inspection.libraries.join(', ') : 'none'}`,
-    `Files (${files?.length || 0}): ${files?.join(', ') || '(empty workspace)'}`,
-    '',
-  ];
-  if (spec) {
-    lines.push('AGENT SPEC — structured design decisions (you IMPLEMENT this, do not re-decide):');
-    lines.push(renderSpecBlock(spec));
-    lines.push('');
-  }
-  lines.push(
-    `SKILLS RETRIEVED FOR THIS TASK (${skillNames}) — you can also discover all via list_skills and read any with read_skill:`,
-    skills.contextBlock ? skills.contextBlock.slice(0, 2500) : '(skill context not available)',
-    '',
-    'STATE MACHINE: UNDERSTANDING → INSPECTION → SKILL_SELECTION → PLANNING → DESIGN_SPEC → IMPLEMENTATION → VISUAL_QA → ITERATION → TESTING → COMPLETED',
-    'You are currently in SKILL_SELECTION/DESIGN_SPEC phase. Next you MUST:',
-    '1. Call list_skills to discover catalogue, then read_skill for 2-3 most relevant (e.g., for cinematic 3D: motion, threejs, gsap, visual-design).',
-    '2. Then implement iteratively per todo order: structure → motion → creative (if listed) → polish. One step per turn, one concern per file.',
-    '3. After writing files, you MUST pass VISUAL_QA (hierarchy, composition, spacing, typography, contrast, motion, depth) and anti-generic checks before done.',
-    'Remember: never a single HTML file with everything inline. Ship index.html + styles/main.css + scripts/main.js separately.',
-    'When the build is complete and verified, emit [{"done": true, "summary": "..."}] — but runtime will block done if SKILL, VISUAL_QA or file-count gates fail.',
-  );
-  return lines.join('\n');
-}
-
-/** Read emitted files back and run the anti-generic gate (used by repair pass). */
-async function genericProblemsForRepair(workspaceDir, rels) {
-  try {
-    const { readFile } = await import('node:fs/promises');
-    const { default: path } = await import('node:path');
-    const htmlRel = rels.map((r) => r.rel).find((rel) => /(^|\/)index\.html$/i.test(rel) || rel.endsWith('.html'));
-    if (!htmlRel) return [];
-    const full = path.resolve(workspaceDir, String(htmlRel).replace(/^\.?\//, ''));
-    if (!full.startsWith(path.resolve(workspaceDir))) return [];
-    const html = await readFile(full, 'utf8').catch(() => '');
-    if (!html) return [];
-    const cssRels = rels.map((r) => r.rel).filter((rel) => rel.endsWith('.css'));
-    let css = '';
-    for (const rel of cssRels.slice(0, 3)) {
-      const f = path.resolve(workspaceDir, String(rel).replace(/^\.?\//, ''));
-      if (!f.startsWith(path.resolve(workspaceDir))) continue;
-      css += `\n${await readFile(f, 'utf8').catch(() => '')}`;
-    }
-    if (!css) {
-      const m = html.match(/<style[\s\S]*?>([\s\S]*?)<\/style>/i);
-      if (m) css = m[1];
-    }
-    return antiGenericCheck({ html, css }).flags.slice(0, 3);
-  } catch {
-    return [];
-  }
 }
