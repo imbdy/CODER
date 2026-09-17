@@ -21,10 +21,34 @@ import { recordRun } from '../workspace/memory.mjs';
 import { makeId } from '../core/util.mjs';
 import { AgentStateMachine, STATES } from './state-machine.mjs';
 import { TodoManager } from './todo-manager.mjs';
-export async function runTask(request, { workspaceDir, config, overrides = {}, bus: externalBus } = {}) {
+
+/** Normalize the conversation's agreed context into explicit build directives:
+ * avoid[] (must-not-build items + constraints) and emphasis[] (must-honor).
+ * Compact and JSON-safe so it can be recorded on the run for inspection. */
+function normalizeAgreed(agreed) {
+  const a = agreed ?? {};
+  const clean = (list, max = 10, len = 140) => [...(list ?? [])].map((s) => String(s ?? '').trim()).filter(Boolean).map((s) => s.slice(0, len)).slice(0, max);
+  return {
+    product: String(a.product ?? '').slice(0, 80),
+    purpose: String(a.purpose ?? '').slice(0, 200),
+    visual: [...(a.visualDirection ?? [])].map((s) => String(s)).slice(0, 8),
+    avoid: [...new Set([...clean(a.rejectedIdeas), ...clean(a.constraints)])],
+    emphasis: [...new Set([...clean(a.typography, 6), ...clean(a.acceptedIdeas), ...clean(a.motion, 4), ...clean(a.depth3d, 4)])],
+  };
+}
+export async function runTask(request, { workspaceDir, config, overrides = {}, bus: externalBus, agreed = undefined } = {}) {
   const bus = externalBus ?? new EventBus();
   const logger = config?.logger ?? silentLogger;
   const run = { id: makeId('run'), request, status: 'running', startedAt: new Date().toISOString(), decisions: [], writes: [] };
+  // Structured agreed context from the conversation (Bug #6): explicit design
+  // decisions that every downstream step — spec, skills, TODOs, QA — must honor.
+  // This is separate from the request text so negations ("not purple") and
+  // emphasis ("typography as main focus") survive as first-class data.
+  const agreedCtx = normalizeAgreed(agreed);
+  if (agreedCtx.product || agreedCtx.avoid.length || agreedCtx.emphasis.length) {
+    run.agreed = agreedCtx;
+    run.decisions.push({ kind: 'agreed-context', choice: agreedCtx.product || '(refinement)', why: `${agreedCtx.avoid.length} avoid / ${agreedCtx.emphasis.length} emphasis` });
+  }
   bus.emit(EVENT.RUN_START, { id: run.id, request });
   let stateMachine;
   let todoManager;
@@ -35,7 +59,15 @@ export async function runTask(request, { workspaceDir, config, overrides = {}, b
     bus.emit(EVENT.THOUGHT, { phase: 'inspect', text: run.inspection.summary });
     const router = createRouter({ config, bus, logger });
     bus.emit(EVENT.PHASE, { phase: 'understand' });
-    const understanding = (await router.json(request, { kind: 'understand', payload: { request, inspection }, phase: 'understand', validate: (v) => !!v?.taskType })).value;
+    let understanding = (await router.json(request, { kind: 'understand', payload: { request, inspection }, phase: 'understand', validate: (v) => !!v?.taskType })).value;
+    // Fold agreed avoidances into the understanding constraints so planning,
+    // skill retrieval and verification all see them (not just the request text).
+    if (agreedCtx.avoid.length) {
+      understanding = {
+        ...understanding,
+        constraints: [...new Set([...(understanding.constraints ?? []), ...agreedCtx.avoid.map((a) => `avoid:${a}`)])],
+      };
+    }
     run.understanding = understanding;
     // State machine enforces workflow (prevents skipping PLANNING, VISUAL_QA, etc.)
     stateMachine = new AgentStateMachine({ request, understanding, inspection });
@@ -65,7 +97,7 @@ export async function runTask(request, { workspaceDir, config, overrides = {}, b
     // INTERNAL design spec (DESIGN → EXPERIENCE → MOTION → TECH → BUILD → QA).
     // Built BEFORE tokens/compose so every later step implements a decision.
     bus.emit(EVENT.PHASE, { phase: 'spec' });
-    const spec = buildDesignSpec({ request, understanding, direction, inspection });
+    const spec = buildDesignSpec({ request, understanding, direction, inspection, agreed: agreedCtx });
     run.spec = { design: spec.design, motion: spec.motion, tech: spec.tech, iterations: spec.plan.iterations, block: renderSpecBlock(spec) };
     // Now create structured TODOs from spec + plan with dependencies
     const enrichedPlan = { steps: plan.steps, ...plan };

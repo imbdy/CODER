@@ -73,6 +73,12 @@ export class DeterministicProvider extends ModelProvider {
       }
       case 'code': {
         const { reasonCode } = await import('../reason/code.mjs');
+        // The heuristic engine cannot drive the tool-calling loop: it needs a
+        // full compose payload (plan.sections). Fail with a clean provider
+        // error instead of a TypeError crash so the router reports it properly.
+        if (!Array.isArray(payload?.plan?.sections)) {
+          throw new ModelError('deterministic engine cannot drive the tool-calling loop (no plan in payload)');
+        }
         const result = await reasonCode(payload);
         text = typeof result === 'string' ? result : JSON.stringify(result);
         break;

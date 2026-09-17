@@ -17,7 +17,7 @@ import { readWorkspaceFile } from '../workspace/writer.mjs';
 import { makeId } from '../core/util.mjs';
 import { checkStructure as verifyStructure } from '../verify/agent-output.mjs';
 
-export async function runBuild(request, { workspaceDir, config, bus, overrides = {}, progress, history = [] } = {}) {
+export async function runBuild(request, { workspaceDir, config, bus, overrides = {}, progress, history = [], agreed = undefined } = {}) {
   const useAgent = config?.runtime?.useAgent !== false;
   if (useAgent) {
     try {
@@ -34,15 +34,41 @@ export async function runBuild(request, { workspaceDir, config, bus, overrides =
           maxSteps: config?.runtime?.maxAgentSteps ?? 15,
           dryRun: Boolean(overrides.dryRun),
         });
-        return { run: agentToRun(agent, request, workspaceDir), bus, agent };
+        // A live agent that wrote files owns the result — even needs-fix runs
+        // keep their partial work (never overwritten by the offline template).
+        // But an agent that failed with ZERO writes produced nothing to
+        // protect: fall through to the deterministic engine so the session
+        // never dead-ends on a flaky provider (empty responses, quota, 5xx).
+        if ((agent.writes ?? []).length > 0) {
+          const agentRun = agentToRun(agent, request, workspaceDir);
+          if (agreed) agentRun.agreed = snapshotAgreed(agreed);
+          return { run: agentRun, bus, agent };
+        }
+        progress?.({ type: 'brain', text: 'live agent produced no files — deterministic engine' });
+      } else {
+        progress?.({ type: 'brain', text: 'no live model — deterministic engine' });
       }
-      progress?.({ type: 'brain', text: 'no live model — deterministic engine' });
     } catch (error) {
       throw error; // Never overwrite a partial agent build with the offline template.
     }
   }
-  const outcome = await runTask(request, { workspaceDir, config, overrides, bus });
+  const outcome = await runTask(request, { workspaceDir, config, overrides, bus, agreed });
   return outcome;
+}
+
+/** Compact, inspectable record of the agreed context consumed by a build. */
+export function snapshotAgreed(agreed) {
+  const a = agreed ?? {};
+  const str = (v) => String(v ?? '').slice(0, 140);
+  return {
+    product: str(a.product),
+    purpose: str(a.purpose),
+    visual: [...(a.visualDirection ?? [])],
+    accepted: [...(a.acceptedIdeas ?? [])].slice(-8),
+    rejected: [...(a.rejectedIdeas ?? [])].slice(-8),
+    constraints: [...(a.constraints ?? [])],
+    decisions: (a.decisions ?? []).length,
+  };
 }
 
 /** Shape the agent result like a deterministic run so the runtime can reuse it. */

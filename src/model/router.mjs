@@ -184,8 +184,28 @@ export class ModelRouter {
       kind = 'chat', payload = {}, system, maxTokens = 4096,
       temperature, phase = 'generate', code = false, languages, messages, onToken, liveOnly = false,
     } = options;
-    const chain = (await this.activeChain()).filter((provider) => provider && (!liveOnly || provider.id !== 'deterministic'));
+    const fullChain = await this.activeChain();
+    const chain = fullChain.filter((provider) => provider && (!liveOnly || provider.id !== 'deterministic'));
     const errors = [];
+    // Root-cause visibility: an empty chain means NO provider was usable.
+    // This happens when liveOnly=true is requested but no live model is reachable
+    // (ollama down / openai-compatible unhealthy) — the deterministic engine was
+    // explicitly excluded. Callers must route discussion locally in that case
+    // instead of treating this as a generic generation failure.
+    if (!chain.length) {
+      const health = await this.describe({ probe: false }).catch(() => []);
+      throw new ModelError(`no provider produced text for "${kind}"`, {
+        details: {
+          errors,
+          liveOnly,
+          chain: fullChain.map((p) => p?.id),
+          providers: health.map?.((h) => ({ id: h.id, ready: h.ready })) ?? [],
+        },
+        hint: liveOnly
+          ? 'No live model available (active chain is empty after excluding deterministic). Start `ollama serve` + `ollama pull qwen2.5-coder:7b`, or set ARTISAN_API_KEY / ARTISAN_BASE_URL + ARTISAN_MODEL. Discussion turns must be handled locally when offline — do not send them through the liveOnly provider path.'
+          : 'Run `artisan doctor`; or force the offline brain with --brain deterministic.',
+      });
+    }
     let emitted = false;
     for (const provider of chain) {
       const started = Date.now();

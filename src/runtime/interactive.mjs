@@ -19,6 +19,7 @@ import { makeId, nowIso } from '../core/util.mjs';
 import { classifyTaskType } from '../reason/understand.mjs';
 import { createRouter } from '../model/router.mjs';
 import { EventBus } from '../core/events.mjs';
+import { createAgreedContext, updateAgreedContext, agreedFromIntent, applyAgreedToRequest, renderAgreedContext } from './agreed-context.mjs';
 
 // ------------------------------------------------ state
 export function createInteractiveState({ workspaceDir, config } = {}) {
@@ -47,7 +48,9 @@ export function createInteractiveState({ workspaceDir, config } = {}) {
       features: [],
       rawHistory: [],
     },
-    phase: 'discuss', // discuss → build
+    phase: 'discuss', // discuss → build (ONE agent; internal states only)
+    agentState: 'CONVERSATION', // CONVERSATION|UNDERSTANDING|INSPECTION|SKILL_SELECTION|PLANNING|DESIGN_SPEC|IMPLEMENTATION|VISUAL_QA|ITERATION|TESTING|COMPLETED
+    agreed: createAgreedContext(), // compact persistent decisions: discussion → execution
     skillsUsed: [], // ids
     unresolvedIssues: [],
     conversation: [], // { role: user|assistant, text, at }
@@ -578,6 +581,9 @@ export async function chatReply(rawRequest, state) {
 }
 
 // ------------------------------------------------ execution with TODO / progress
+// ONE continuous agent: DISCUSS → DECIDE → EXECUTE → REPORT → DISCUSS.
+// `converse` owns the model-driven loop (discussion + build triggers);
+// executeTurn is the single entry the CLI calls every turn.
 export async function executeTurn(rawRequest, state, { bus, onProgress, onToken } = {}) {
   const input = String(rawRequest ?? '').trim();
   if (!input) return { kind: 'empty' };
@@ -585,6 +591,14 @@ export async function executeTurn(rawRequest, state, { bus, onProgress, onToken 
     const command = handleCommand(input, state);
     return { kind: command.exit ? 'exit' : 'answer', text: command.text, state };
   }
+  // Fold every user turn into the agreed context first — execution later
+  // receives ALL decisions, never just the last message.
+  try {
+    state.agreed = updateAgreedContext(state.agreed ?? createAgreedContext(), input);
+    const upd = extractDesignIntent(input);
+    state.designIntentObj = mergeDesignIntent(state.designIntentObj ?? createInteractiveState({}).designIntentObj, upd);
+    state.agreed = agreedFromIntent(state.designIntentObj, state.agreed);
+  } catch { /* context fold is best-effort */ }
   return converse(input, state, { bus, onProgress, onToken });
 }
 

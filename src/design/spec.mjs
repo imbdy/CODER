@@ -60,24 +60,37 @@ function conceptOf(request = '', feels = [], direction) {
   if (/soft|calm|warm|friendly/.test(t)) cues.push('soft surfaces, generous air');
   return `${feels.join('/')} register; ${direction?.name ?? 'chosen direction'} discipline; ${cues.length ? cues.join('; ') : 'one focal idea per viewport, asymmetry over symmetry'}`;
 }
-export function buildDesignSpec({ request = '', understanding = {}, direction, inspection = {} } = {}) {
+export function buildDesignSpec({ request = '', understanding = {}, direction, inspection = {}, agreed = {} } = {}) {
   const taskType = understanding.taskType ?? 'create-page';
   const feels = feelsOf(request);
   const motion = buildMotion(request, taskType);
   const tech = buildTech(request, taskType, inspection);
   const t = String(request).toLowerCase();
+  // Explicit conversation decisions (avoid/emphasis) — first-class spec inputs,
+  // not just request-text keywords. Negations ("not purple", "restrained hero")
+  // and focus ("typography as main focus") must survive into the contract.
+  const avoid = Array.isArray(agreed.avoid) ? agreed.avoid : [];
+  const emphasis = Array.isArray(agreed.emphasis) ? agreed.emphasis : [];
+  const avoidText = avoid.join(' | ').toLowerCase();
+  const emphasisText = [...emphasis, String(request)].join(' | ').toLowerCase();
+  const restrainedHero = /\bhero\b/.test(avoidText) && /(overload|crowd|busy|huge|oversized|too?\s*big|clutter|restrain|minimal|simple)/.test(avoidText);
+  const avoidPurple = /purple/.test(avoidText);
+  const typeFocus = /(typograph|display type|headline).*focus|focus.*(typograph|display type|headline)/.test(emphasisText);
   // Rich design decisions — stored BEFORE major implementation to prevent generic components
   const visual_direction = direction
     ? `${direction.name} (${direction.id}) — ${direction.summary}; character ${direction.character.join(', ')}; rules: ${direction.rules.slice(0,2).join('; ')}`
     : 'confident register; single focal idea per viewport, asymmetry over symmetry';
   const layout_strategy = direction?.grid ?? 'asymmetric 7/5 split hero, bento/features grid, 12-col institutional for dense sections; nav + hero (one focal) + proof + features + showcase + testimonials + cta + footer';
-  const typography = direction
+  const typography = (direction
     ? `display ${direction.fonts.display} tight tracking ${direction.tracking.display}, body 16px/1.65 measure <=62ch, mono ${direction.fonts.mono} for labels; scale ${direction.typeScale}`
-    : 'display tight tracking; body 16px/1.65 mono labels; measure <=62ch';
-  const color_system = direction
+    : 'display tight tracking; body 16px/1.65 mono labels; measure <=62ch');
+  const typographyOut = typeFocus ? `typography as primary focus; ${typography}` : typography;
+  const colorOut = (direction
     ? `theme ${direction.theme}/${direction.neutral}; accent ${direction.accent} as signal only 60-30-10; surfaces layered (base+atmosphere max 1), grain 2-4%`
-    : 'one accent as signal only 60-30-10; neutral substrate + layered depth';
+    : 'one accent as signal only 60-30-10; neutral substrate + layered depth')
+    + (avoidPurple ? '; AVOID purple AI-SaaS gradient cliché (explicitly rejected)' : '');
   const hero_concept = (() => {
+    if (restrainedHero) return 'restrained hero: typography-led single focal, generous whitespace, calm composition, no overload, no oversized title';
     if (/cinematic|premium|futuristic/.test(t) && tech.depth !== 'css') return `cinematic hero: bounded WebGL focal (${tech.depth}) + parallax orbs + scrimmed typography, depth 40-60px, vignette edges, one atmosphere`;
     if (/cinematic|premium/.test(t)) return 'cinematic hero: layered depth via CSS orbs + full-bleed figure, display type large with tight tracking, asymmetry 7/5';
     if (direction?.id === 'editorial-serif') return 'editorial hero: oversized serif breaking grid, hairlines over cards, marginal whitespace, paper substrate';
@@ -100,14 +113,17 @@ export function buildDesignSpec({ request = '', understanding = {}, direction, i
     : 'one hero canvas tri-count < 30k, async CDN importmap, content readable before WebGL, DPR 1.8 cap, offscreen pause, visibilitychange dispose';
 
   const design = {
+    project: String(agreed.product ?? '').slice(0, 80) || understanding.subject || String(request).slice(0, 80),
     purpose: understanding.subject ?? String(request).slice(0, 80),
     feels,
+    avoid,
+    emphasis,
     direction: direction ? { id: direction.id, name: direction.name, summary: direction.summary, accent: direction.accent, theme: direction.theme } : undefined,
     visualConcept: conceptOf(request, feels, direction),
     visual_direction,
     layout_strategy,
-    typography,
-    color_system,
+    typography: typographyOut,
+    color_system: colorOut,
     hero_concept,
     motion_language,
     '3d_strategy': depth3d_strategy,
@@ -125,6 +141,9 @@ export function buildDesignSpec({ request = '', understanding = {}, direction, i
 export function renderSpecBlock(spec) {
   if (!spec) return '';
   const L = [`DESIGN SPEC — ${spec.design?.purpose ?? ''} [${(spec.feels ?? []).join('/')}]`];
+  if (spec.design?.project) L.push(`project: ${spec.design.project}`);
+  if ((spec.design?.avoid ?? []).length) L.push(`avoid (must not build): ${spec.design.avoid.join(' | ')}`);
+  if ((spec.design?.emphasis ?? []).length) L.push(`emphasis (must honor): ${spec.design.emphasis.slice(0, 6).join(' | ')}`);
   if (spec.design?.visualConcept) L.push(`concept: ${spec.design.visualConcept}`);
   if (spec.design?.direction) L.push(`direction: ${spec.design.direction.name} (${spec.design.direction.id})`);
   L.push(`visual_direction: ${spec.design?.visual_direction ?? ''}`);

@@ -4,13 +4,14 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>Artisan site</title>
+<!-- composed by artisan | skills: anti-slop, frontend-master, visual-design, layout, micro-interactions, typography, responsive-design -->
 <meta name="description" content="Project in one considered place. Clear, fast, and built to be used."/>
 <link rel="preconnect" href="https://fonts.googleapis.com" />
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@300..700&family=Instrument+Serif:ital,wght@0,400;0,600;1,400&family=IBM+Plex+Mono:wght@300..700&display=swap" />
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Outfit:wght@300..700&family=Fraunces:ital,wght@0,400;0,600;1,400&family=IBM+Plex+Mono:wght@300..700&display=swap" />
 <style>
 /* =============================================================
-   Editorial Serif — base layer
+   Humanist Airy — base layer
    Generated from design tokens. Change values in .forge/config.json
    or in the :root block below, never by editing rules ad hoc.
    ============================================================= */
@@ -33,24 +34,24 @@
   --color-border-strong: rgb(0 0 0 / 0.2);
 
   /* type */
-  --font-sans: "Inter", system-ui, sans-serif;
-  --font-display: "Instrument Serif", "Iowan Old Style", Georgia, serif;
+  --font-sans: "Outfit", "Inter", system-ui, sans-serif;
+  --font-display: "Fraunces", Georgia, serif;
   --font-mono: "IBM Plex Mono", ui-monospace, monospace;
-  --text-xs: 0.563rem;
-  --text-sm: 0.75rem;
+  --text-xs: 0.672rem;
+  --text-sm: 0.82rem;
   --text-base: 1rem;
-  --text-lg: 1.333rem;
-  --text-xl: 1.777rem;
-  --text-2xl: clamp(1.99rem, 2.14rem + 0.47vw, 2.369rem);
-  --text-3xl: clamp(2.652rem, 2.85rem + 0.63vw, 3.157rem);
-  --text-4xl: clamp(3.536rem, 3.81rem + 0.84vw, 4.209rem);
-  --text-5xl: clamp(4.712rem, 5.07rem + 1.12vw, 5.61rem);
+  --text-lg: 1.22rem;
+  --text-xl: 1.488rem;
+  --text-2xl: clamp(1.525rem, 1.64rem + 0.36vw, 1.816rem);
+  --text-3xl: clamp(1.861rem, 2.00rem + 0.44vw, 2.215rem);
+  --text-4xl: clamp(2.271rem, 2.44rem + 0.54vw, 2.703rem);
+  --text-5xl: clamp(2.769rem, 2.98rem + 0.66vw, 3.297rem);
   --weight-regular: 400;
   --weight-medium: 500;
   --weight-semibold: 600;
   --weight-bold: 700;
-  --tracking-display: -0.03em;
-  --tracking-heading: -0.015em;
+  --tracking-display: -0.015em;
+  --tracking-heading: -0.01em;
   --tracking-body: 0;
   --tracking-caps: 0.08em;
 
@@ -69,10 +70,10 @@
   --space-section: 125px;
   --space-sectionLg: 192px;
   --space-gutter: 25px;
-  --radius-sm: 2px;
-  --radius-md: 3px;
-  --radius-lg: 4px;
-  --radius-xl: 6px;
+  --radius-sm: 10px;
+  --radius-md: 16px;
+  --radius-lg: 24px;
+  --radius-xl: 32px;
   --radius-pill: 999px;
   --shadow-xs: 0 1px 2px rgb(16 16 20 / 0.06);
   --shadow-sm: 0 2px 6px rgb(16 16 20 / 0.08);
@@ -85,19 +86,19 @@
   --duration-instant: 90ms;
   --duration-fast: 160ms;
   --duration-base: 260ms;
-  --duration-slow: 480ms;
+  --duration-slow: 460ms;
   --duration-cinematic: 720ms;
   --ease-standard: cubic-bezier(0.2, 0.7, 0.2, 1);
   --ease-emphasized: cubic-bezier(0.16, 1, 0.3, 1);
   --ease-entrance: cubic-bezier(0.22, 1, 0.36, 1);
   --ease-exit: cubic-bezier(0.4, 0, 1, 1);
   --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
-  --stagger: 70ms;
+  --stagger: 65ms;
   --motion-distance: 12px;
   --motion-lift: 2px;
 
   /* layout */
-  --max-width: 76rem;
+  --max-width: 74rem;
   --prose-width: 62ch;
 }
 
@@ -864,11 +865,11 @@ button, input, select, textarea { font: inherit; color: inherit; }
         
       </div>
     </header>
-<section class="hero hero--editorial" id="top">
+<section class="hero hero--split" id="top">
       <div class="container hero__inner">
         <div class="stack stack--xs">
-          <span class="hero__eyebrow">Issue 01</span>
-          <h1 class="hero__title">Project, considered</h1>
+          <span class="hero__eyebrow">Care</span>
+          <h1 class="hero__title">Project, thoughtfully</h1>
           <p class="hero__sub">Project in one considered place. Clear, fast, and built to be used.</p>
           <div class="hero__actions">
             <a class="btn btn--primary" href="#start"><span class="btn__label">Get started</span></a>
@@ -876,7 +877,7 @@ button, input, select, textarea { font: inherit; color: inherit; }
           </div>
           <p class="hero__proof">Trusted by teams in 12 countries</p>
         </div>
-        
+        <div class="hero__object float" aria-hidden="true"></div>
       </div>
     </section>
 <section class="section section--tight proof"><div class="container"><p class="proof__label">Used by</p><div class="proof__items"><span class="proof__item">Northwind</span>
@@ -894,10 +895,20 @@ button, input, select, textarea { font: inherit; color: inherit; }
 <section class="section showcase" id="how"><div class="container showcase__inner"><div class="stack stack--sm"><h2 class="section__title">See it in place</h2><p class="lede">A close look at how it behaves when you actually use it, with real content and real constraints.</p><ul class="showcase__list"><li>Responsive down to 390px</li>
 <li>Reduced-motion respected</li>
 <li>Contrast checked against WCAG AA</li></ul></div><div class="hero__object float" aria-hidden="true"></div></div></section>
+<section class="section" id="pricing"><div class="container"><div class="section__head">
+        <h2 class="section__title">Straightforward pricing</h2>
+        </div><div class="tiers"><article class="tier"><p class="tier__name">Starter</p><p class="tier__price">EUR 19</p><p class="tier__cadence">per month</p><ul class="tier__features"><li>1 workspace</li><li>5 seats</li><li>Community support</li></ul><a class="btn btn--ghost" href="#start"><span class="btn__label">Choose Starter</span></a></article>
+<article class="tier tier--featured"><p class="tier__name">Team</p><p class="tier__price">EUR 49</p><p class="tier__cadence">per month</p><ul class="tier__features"><li>Unlimited workspaces</li><li>25 seats</li><li>Priority support</li><li>Audit log</li></ul><a class="btn btn--primary" href="#start"><span class="btn__label">Choose Team</span></a></article>
+<article class="tier"><p class="tier__name">Scale</p><p class="tier__price"> Custom</p><p class="tier__cadence">annual</p><ul class="tier__features"><li>SSO &amp; SCIM</li><li>Dedicated region</li><li>Solution engineer</li></ul><a class="btn btn--ghost" href="#start"><span class="btn__label">Choose Scale</span></a></article></div></div></section>
 <section class="section"><div class="container"><div class="section__head">
         <h2 class="section__title">What people say</h2>
         </div><div class="quotes"><figure class="quote" data-reveal><blockquote class="quote__text">It looked considered on the first screen, and it still does after six months of use.</blockquote><figcaption class="quote__by">Dana Whitfield &mdash; Head of Operations</figcaption></figure>
 <figure class="quote" data-reveal><blockquote class="quote__text">Nothing flashy. It does exactly what it says, quickly.</blockquote><figcaption class="quote__by">Tomas Reyes &mdash; Founder, Halden &amp; Co</figcaption></figure></div></div></section>
+<section class="section"><div class="container"><div class="section__head">
+        <h2 class="section__title">Questions, answered</h2>
+        </div><div class="faq__list"><div class="faq__item"><button class="faq__q" type="button" aria-expanded="false" aria-controls="faq-a-0" data-faq-q>How long does setup take?</button><div class="faq__a" id="faq-a-0" hidden data-faq-a><p>Most teams are working within an hour; nothing requires a migration window.</p></div></div>
+<div class="faq__item"><button class="faq__q" type="button" aria-expanded="false" aria-controls="faq-a-1" data-faq-q>Can I keep my existing stack?</button><div class="faq__a" id="faq-a-1" hidden data-faq-a><p>Yes. It reads what you already have and leaves your tooling in place.</p></div></div>
+<div class="faq__item"><button class="faq__q" type="button" aria-expanded="false" aria-controls="faq-a-2" data-faq-q>What happens to my data if I leave?</button><div class="faq__a" id="faq-a-2" hidden data-faq-a><p>Full export in open formats, on demand, without a support ticket.</p></div></div></div></div></section>
 <section class="section"><div class="container"><div class="cta__panel" data-reveal><div class="stack stack--xs"><h2 class="cta__title">Start with Project</h2><p class="lede">Set it up in minutes. Nothing to install, nothing to babysit.</p></div><a class="btn btn--primary" href="#start"><span class="btn__label">Get started</span></a></div></div></section>
 <footer class="footer"><div class="container"><div class="footer__inner"><span class="footer__brand">Project</span><div class="footer__cols"><div><p class="footer__col-title">Product</p><ul class="footer__links"><li><a href="#">Product</a></li><li><a href="#">How it works</a></li><li><a href="#">Pricing</a></li></ul></div>
 <div><p class="footer__col-title">Company</p><ul class="footer__links"><li><a href="#">About</a></li><li><a href="#">Careers</a></li><li><a href="#">Contact</a></li></ul></div></div></div><p class="footer__note">© 2026 Project. All rights reserved.</p></div></footer>
