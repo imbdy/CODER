@@ -252,6 +252,30 @@ export const METRICS_SCRIPT = String.raw`(() => {
   const hex = (c) => '#' + [c.r, c.g, c.b].map((v) => Math.round(v).toString(16).padStart(2, '0')).join('');
   const hueOf = (c) => { const r = c.r / 255, g = c.g / 255, b = c.b / 255; const max = Math.max(r, g, b), min = Math.min(r, g, b); const d = max - min; if (d === 0) return { h: 0, s: 0, l: max }; const l = (max + min) / 2; const s = d / (1 - Math.abs(2 * l - 1)); let h; if (max === r) h = ((g - b) / d) % 6; else if (max === g) h = (b - r) / d + 2; else h = (r - g) / d + 4; h = Math.round(h * 60); if (h < 0) h += 360; return { h, s, l }; };
   const textOf = (el) => (el.innerText || el.textContent || '').replace(/\s+/g, ' ').trim();
+  // A "ch" is the advance width of the "0" glyph in the element's own font, not
+  // half an em. Assuming 0.5em over-reported the measure by ~20% on faces with a
+  // wide zero (IBM Plex Sans, most serifs): a paragraph correctly capped at
+  // 62ch was reported as 74ch, which turns a healthy page into a QA finding.
+  const chCache = new Map();
+  const chWidth = (cs) => {
+    const key = cs.fontFamily + '|' + cs.fontSize + '|' + cs.fontWeight + '|' + cs.fontStyle;
+    if (chCache.has(key)) return chCache.get(key);
+    let w = 0;
+    try {
+      const probe = document.createElement('span');
+      probe.textContent = '00000000000000000000';
+      probe.style.cssText = 'position:absolute;visibility:hidden;white-space:pre;left:-9999px;top:0;padding:0;border:0;';
+      probe.style.font = cs.font || '';
+      if (!probe.style.font) { probe.style.fontFamily = cs.fontFamily; probe.style.fontSize = cs.fontSize; probe.style.fontWeight = cs.fontWeight; probe.style.fontStyle = cs.fontStyle; }
+      probe.style.letterSpacing = cs.letterSpacing;
+      document.body.appendChild(probe);
+      w = probe.getBoundingClientRect().width / 20;
+      probe.remove();
+    } catch { w = 0; }
+    if (!(w > 0)) w = parseFloat(cs.fontSize) * 0.5; // last resort, the old assumption
+    chCache.set(key, w);
+    return w;
+  };
   const describe = (el) => (el.tagName.toLowerCase() + (el.id ? '#' + el.id : '') + (el.className && typeof el.className === 'string' ? '.' + el.className.trim().split(/\s+/).slice(0, 2).join('.') : ''));
 
   safe('viewport', () => ({ width: vw, height: vh, docHeight: doc.scrollHeight, scrollWidth: doc.scrollWidth, horizontalOverflow: doc.scrollWidth > vw + 1, title: document.title, lang: doc.getAttribute('lang') || '' }));
@@ -259,7 +283,7 @@ export const METRICS_SCRIPT = String.raw`(() => {
   safe('headings', () => { const hs = [...document.querySelectorAll('h1,h2,h3,h4,h5,h6')].filter(visible).map((h) => ({ level: Number(h.tagName[1]), text: textOf(h).slice(0, 80), px: parseFloat(getComputedStyle(h).fontSize), weight: getComputedStyle(h).fontWeight, family: getComputedStyle(h).fontFamily.split(',')[0].replace(/["']/g, '').trim() })); let orderIssues = 0; let last = 0; for (const h of hs) { if (last && h.level > last + 1) orderIssues += 1; last = h.level; } return { count: hs.length, h1: hs.filter((h) => h.level === 1).map((h) => h.text), h1Px: hs.find((h) => h.level === 1)?.px ?? 0, orderIssues, list: hs.slice(0, 24) }; });
   safe('sections', () => { const decorative = (el) => el.getAttribute('aria-hidden') === 'true' || ['absolute', 'fixed'].includes(getComputedStyle(el).position) || [...el.querySelectorAll('*')].length === 0 && !textOf(el); const nodes = [...document.querySelectorAll('header, nav, main > *, section, article, footer, [class*="hero"]')].filter((el, i, arr) => arr.indexOf(el) === i).filter((el) => visible(el) && !decorative(el)).slice(0, 28); return nodes.map((el) => { const r = el.getBoundingClientRect(); const text = textOf(el); return { el: describe(el), top: Math.round(r.top + window.scrollY), height: Math.round(r.height), textChars: text.length, images: el.querySelectorAll('img, svg, canvas, video, picture').length, headings: el.querySelectorAll('h1,h2,h3').length, empty: text.length < 12 && !el.querySelector('img, svg, canvas, video, picture, form, button') }; }); });
   safe('firstViewport', () => { const els = [...document.body.querySelectorAll('*')].filter((el) => { if (!visible(el)) return false; const r = el.getBoundingClientRect(); return r.top < vh && r.bottom > 0; }); const text = els.filter((el) => el.children.length === 0).map(textOf).join(' ').trim(); const heading = els.find((el) => /^H[1-3]$/.test(el.tagName)); const first = document.querySelector('main > *:not(nav):not(header), section, [class*="hero"]'); const firstRect = first ? first.getBoundingClientRect() : null; const ctas = els.filter((el) => (el.tagName === 'BUTTON' || (el.tagName === 'A' && /btn|button|cta/i.test(el.className))) && textOf(el).length); return { elements: els.length, textChars: text.length, hasHeading: Boolean(heading), headingText: heading ? textOf(heading).slice(0, 80) : '', heroHeightRatio: firstRect ? Number((firstRect.height / vh).toFixed(2)) : 0, ctaCount: ctas.length, ctaLabels: ctas.slice(0, 4).map(textOf) }; });
-  safe('text', () => { const els = [...document.body.querySelectorAll('p, li, a, button, span, label, h1, h2, h3, h4, h5, h6, td, th, dd, dt, blockquote, small, strong, em, figcaption, summary')].filter((el) => visible(el) && textOf(el).length >= 4 && [...el.childNodes].some((n) => n.nodeType === 3 && n.textContent.trim().length >= 3)); let min = Infinity, max = 0; const families = new Map(); const sizes = new Map(); let small = 0; let widestCh = 0; for (const el of els.slice(0, 1200)) { const cs = getComputedStyle(el); const px = parseFloat(cs.fontSize); if (px < min) min = px; if (px > max) max = px; if (px < 12) small += 1; const fam = cs.fontFamily.split(',')[0].replace(/["']/g, '').trim(); families.set(fam, (families.get(fam) || 0) + 1); if (el.tagName === 'P' || el.tagName === 'LI') { const chars = textOf(el).length; sizes.set(px, (sizes.get(px) || 0) + chars); const ch = el.getBoundingClientRect().width / (px * 0.5); if (ch > widestCh && chars > 60) widestCh = ch; } } let bodyPx = 16; let best = 0; for (const [px, n] of sizes) if (n > best) { best = n; bodyPx = px; } return { sampled: Math.min(els.length, 1200), minFontPx: Number.isFinite(min) ? min : 0, maxFontPx: max, bodyFontPx: bodyPx, smallTextCount: small, families: [...families.entries()].sort((a, b) => b[1] - a[1]).slice(0, 6).map(([f, n]) => f + ' x' + n), maxParagraphWidthCh: Math.round(widestCh) }; });
+  safe('text', () => { const els = [...document.body.querySelectorAll('p, li, a, button, span, label, h1, h2, h3, h4, h5, h6, td, th, dd, dt, blockquote, small, strong, em, figcaption, summary')].filter((el) => visible(el) && textOf(el).length >= 4 && [...el.childNodes].some((n) => n.nodeType === 3 && n.textContent.trim().length >= 3)); let min = Infinity, max = 0; const families = new Map(); const sizes = new Map(); let small = 0; let widestCh = 0; for (const el of els.slice(0, 1200)) { const cs = getComputedStyle(el); const px = parseFloat(cs.fontSize); if (px < min) min = px; if (px > max) max = px; if (px < 12) small += 1; const fam = cs.fontFamily.split(',')[0].replace(/["']/g, '').trim(); families.set(fam, (families.get(fam) || 0) + 1); if (el.tagName === 'P' || el.tagName === 'LI') { const chars = textOf(el).length; sizes.set(px, (sizes.get(px) || 0) + chars); const ch = el.getBoundingClientRect().width / chWidth(cs); if (ch > widestCh && chars > 60) widestCh = ch; } } let bodyPx = 16; let best = 0; for (const [px, n] of sizes) if (n > best) { best = n; bodyPx = px; } return { sampled: Math.min(els.length, 1200), minFontPx: Number.isFinite(min) ? min : 0, maxFontPx: max, bodyFontPx: bodyPx, smallTextCount: small, families: [...families.entries()].sort((a, b) => b[1] - a[1]).slice(0, 6).map(([f, n]) => f + ' x' + n), maxParagraphWidthCh: Math.round(widestCh) }; });
   safe('contrast', () => { const els = [...document.body.querySelectorAll('p, li, a, button, label, h1, h2, h3, h4, h5, h6, td, th, dd, dt, small, span, summary, figcaption')].filter((el) => visible(el) && [...el.childNodes].some((n) => n.nodeType === 3 && n.textContent.trim().length >= 3)).slice(0, 400); const failures = []; let checked = 0; let skipped = 0; for (const el of els) { const cs = getComputedStyle(el); const fg = parseColor(cs.color); if (!fg) continue; const bg = bgOf(el); if (bg.hasImage) { skipped += 1; continue; } const px = parseFloat(cs.fontSize); const bold = parseInt(cs.fontWeight, 10) >= 700; const large = px >= 24 || (px >= 18.66 && bold); const needed = large ? 3 : 4.5; const fgc = fg.a < 1 ? blend(fg, bg.color) : fg; const r = ratio(fgc, bg.color); checked += 1; if (r < needed && failures.length < 8) failures.push({ el: describe(el), text: textOf(el).slice(0, 40), ratio: Number(r.toFixed(2)), needed, fg: hex(fgc), bg: hex(bg.color), px }); } return { checked, skipped, failures }; });
   safe('colors', () => { const bgs = new Map(); const gradients = []; let blur = 0; let softBlur = 0; const accent = new Map(); for (const el of document.body.querySelectorAll('*')) { if (!visible(el)) continue; const cs = getComputedStyle(el); const c = parseColor(cs.backgroundColor); if (c && c.a > 0.2) { const key = hex(c); bgs.set(key, (bgs.get(key) || 0) + 1); } if (cs.backgroundImage && /gradient/.test(cs.backgroundImage) && gradients.length < 12) gradients.push(cs.backgroundImage.slice(0, 80)); if (/blur/.test(cs.backdropFilter || cs.webkitBackdropFilter || '')) blur += 1; else if (/blur/.test(cs.filter || '')) softBlur += 1; if ((el.tagName === 'BUTTON' || el.tagName === 'A') && c && c.a > 0.5) { const hsl = hueOf(c); if (hsl.s > 0.25) { const key = hex(c); accent.set(key, { count: (accent.get(key)?.count || 0) + 1, hue: hsl.h, sat: Number(hsl.s.toFixed(2)) }); } } } const accents = [...accent.entries()].sort((a, b) => b[1].count - a[1].count).slice(0, 4).map(([k, v]) => ({ color: k, hue: v.hue, sat: v.sat, count: v.count })); const bodyBg = parseColor(getComputedStyle(document.body).backgroundColor); return { distinctBackgrounds: bgs.size, gradients: gradients.length, gradientSamples: gradients.slice(0, 3), blurCount: blur, softBlurCount: softBlur, accents, theme: bodyBg && bodyBg.a > 0 ? (lum(bodyBg) < 0.2 ? 'dark' : 'light') : 'unknown', bodyBackground: bodyBg ? hex(bodyBg) : '' }; });
   safe('layout', () => { let cardLike = 0; let absoluteDecor = 0; let uniformGrids = 0; const cardSizes = []; for (const el of document.body.querySelectorAll('*')) { if (!visible(el)) continue; const cs = getComputedStyle(el); const r = el.getBoundingClientRect(); const radius = parseFloat(cs.borderTopLeftRadius) || 0; const bordered = cs.borderTopStyle !== 'none' && parseFloat(cs.borderTopWidth) > 0; const shadow = cs.boxShadow && cs.boxShadow !== 'none'; if (radius >= 10 && (bordered || shadow) && r.width * r.height > 20000 && r.width < vw * 0.8) { cardLike += 1; cardSizes.push(Math.round(r.width) + 'x' + Math.round(r.height)); } if ((cs.position === 'absolute' || cs.position === 'fixed') && (el.getAttribute('aria-hidden') === 'true' || textOf(el).length === 0) && r.width * r.height > 5000 && !/nav|header/i.test(el.tagName + el.className)) absoluteDecor += 1; if (cs.display === 'grid') { const cols = (cs.gridTemplateColumns || '').split(' ').filter(Boolean); if (cols.length >= 3 && new Set(cols).size === 1 && el.children.length >= 3) uniformGrids += 1; } } const sizeCounts = {}; for (const s of cardSizes) sizeCounts[s] = (sizeCounts[s] || 0) + 1; const identicalCards = Math.max(0, ...Object.values(sizeCounts)); return { cardLike, identicalCards, uniformGrids, absoluteDecor, canvas: document.querySelectorAll('canvas').length, svg: document.querySelectorAll('svg').length, images: document.images.length, brokenImages: [...document.images].filter((img) => img.complete && img.naturalWidth === 0 && !img.src.startsWith('data:')).length, transforms3d: [...document.body.querySelectorAll('*')].filter((el) => { const t = getComputedStyle(el).transform; return t && t.startsWith('matrix3d'); }).length, perspective: [...document.body.querySelectorAll('*')].some((el) => getComputedStyle(el).perspective !== 'none') }; });
@@ -302,6 +326,25 @@ const SCROLL_THROUGH_SCRIPT = String.raw`(async () => { const h = document.docum
  * Render a page from the workspace at several viewports.
  * @returns {Promise<object>} see module docs. Never throws for "no browser"; throws only on unexpected failures.
  */
+/**
+ * Reveal-state control for full-page captures.
+ *
+ * Class-based reveals persist once intersected, but a CSS scroll-driven reveal
+ * is a function of scroll position: everything below the fold sits at its first
+ * keyframe. Capturing that produces a screenshot of an empty page, which the
+ * critique then scores — so the harness pins the finished state for the shot.
+ */
+const CAPTURE_REVEALS = `(() => {
+  document.documentElement.setAttribute('data-capture', '1');
+  for (const el of document.querySelectorAll('[data-reveal]')) {
+    el.classList.add('enter', 'is-in');
+    el.setAttribute('data-reveal', 'in');
+  }
+  return '1';
+})()`;
+
+const RELEASE_REVEALS = `(() => { document.documentElement.removeAttribute('data-capture'); return '1'; })()`;
+
 export async function renderPage({
   workspaceDir, entry = 'index.html', viewports = DEFAULT_VIEWPORTS, config = {}, outDir,
   settleMs = 900, timeoutMs = 25000, url: explicitUrl, fullPage = true, reducedMotionCheck = true,
@@ -371,10 +414,17 @@ export async function renderPage({
       if (fullPage) {
         const docHeight = Math.min(Number(metrics?.viewport?.docHeight ?? viewport.height) || viewport.height, 6000);
         fullPath = path.join(shotsDir, `${viewport.name}-full.png`);
+        // A full-page capture renders past the viewport, where a scroll-driven
+        // reveal has not advanced: the shot comes back with every section below
+        // the fold still at its "before" keyframe, and the critique sees an empty
+        // page that a real visitor never sees. Force every reveal to its finished
+        // state for the capture only, then release it.
+        try { await session.evaluate(CAPTURE_REVEALS); } catch { /* best effort */ }
         try {
           const shot = await session.send('Page.captureScreenshot', { format: 'png', captureBeyondViewport: true, clip: { x: 0, y: 0, width: viewport.width, height: docHeight, scale: 1 } }, 40000);
           fs.writeFileSync(fullPath, Buffer.from(shot.data, 'base64'));
         } catch (error) { metrics.fullScreenshotError = String(error?.message ?? error); fullPath = undefined; }
+        try { await session.evaluate(RELEASE_REVEALS); } catch { /* best effort */ }
       }
       let reducedMotion;
       if (reducedMotionCheck && viewport === viewports[0]) {

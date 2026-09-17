@@ -157,10 +157,21 @@ function critiquePrompt({ spec, agreed, render, findings, round, mode, vision, r
   if (findings.length) lines.push('', 'DETERMINISTIC FINDINGS (already counted):', ...findings.map((f) => `- [${f.severity}] ${f.area}: ${f.evidence}`));
   lines.push(
     '',
+    // A single 0-100 number lets a page average its way to a pass: strong colour
+    // and a competent grid hide typography that never had an idea. Scoring five
+    // weighted categories, each with a floor, means the weakest one is named.
+    'SCORE FIVE CATEGORIES, 0-10 each. Bands: 0-3 amateur, 4-6 competent, 7-8 professional, 9-10 exceptional.',
+    '- typography (weight 25%): is there a real scale system (display-to-body ratio 10:1 or better), a face with a point of view, deliberate tracking, measure 45-75ch? A commodity face used as the identity caps this at 4.',
+    '- composition (weight 25%): one clear focal point, asymmetry, deliberate grid breaks, white space as material. Centred stacks and equal spacing everywhere cap this at 5.',
+    '- motion (weight 20%): one choreographed load ladder, one custom easing family, transform/opacity only, reduced-motion respected. Default easing or no motion idea caps this at 5.',
+    '- colour (weight 15%): one substrate plus one signature accent, no pure #000 or #fff, contrast holding on every surface.',
+    '- craft (weight 15%): focus states, selection colour, typographic detail, responsive integrity, nothing left at a default.',
+    'The overall score is the weighted sum x 10. A category below 7 must appear as a weakness naming that category.',
+    '',
     'Evaluate: hierarchy, composition, spacing/rhythm, typography, colour, depth, focal point, motion (from metrics), responsiveness, generic/template feel, unfinished areas, unnecessary elements, copy specificity, whether every part of the brief was actually delivered, and agreement with the spec.',
     'Reply with STRICT JSON only:',
-    '{"score": 0-100, "verdict": "pass"|"iterate", "summary": "one sentence", "strengths": ["..."], "weaknesses": [{"area": "hierarchy|composition|spacing|typography|color|depth|motion|responsive|content|generic|accessibility", "severity": "blocker|major|minor", "evidence": "what you observed", "fix": "concrete change to make"}]}',
-    'Verdict "pass" only when the page would impress a demanding client as intentional and finished. List at most 6 weaknesses, most important first.',
+    '{"scores": {"typography": 0-10, "composition": 0-10, "motion": 0-10, "color": 0-10, "craft": 0-10}, "score": 0-100, "verdict": "pass"|"iterate", "summary": "one sentence", "strengths": ["..."], "weaknesses": [{"area": "hierarchy|composition|spacing|typography|color|depth|motion|responsive|content|generic|accessibility", "severity": "blocker|major|minor", "evidence": "what you observed", "fix": "concrete change to make"}]}',
+    'Verdict "pass" only when EVERY category is 7 or above and the page would impress a demanding client as intentional and finished. List at most 6 weaknesses, most important first.',
   );
   return lines.join('\n');
 }
@@ -196,6 +207,27 @@ function imagesFor(render) {
   return list;
 }
 
+const CRITIQUE_WEIGHTS = { typography: 0.25, composition: 0.25, motion: 0.20, color: 0.15, craft: 0.15 };
+
+/** The five category scores, clamped to 0-10, or undefined when the model gave none. */
+function categoryScores(raw) {
+  if (!raw || typeof raw !== 'object') return undefined;
+  const out = {};
+  for (const key of Object.keys(CRITIQUE_WEIGHTS)) {
+    const n = Number(raw[key]);
+    if (!Number.isFinite(n)) return undefined;
+    out[key] = Math.max(0, Math.min(10, n));
+  }
+  return out;
+}
+
+/** Weighted sum of the categories, on the same 0-100 scale as the old score. */
+function weightedScore(scores) {
+  let total = 0;
+  for (const [key, weight] of Object.entries(CRITIQUE_WEIGHTS)) total += scores[key] * weight;
+  return Math.round(total * 10);
+}
+
 export async function critiqueWithModel({ router, spec, agreed, render, findings, round = 1, mode = 'create', requirements = [], coverage }) {
   if (!router) return undefined;
   let live = false;
@@ -214,13 +246,28 @@ export async function critiqueWithModel({ router, spec, agreed, render, findings
     if (!parsed.ok || typeof parsed.value !== 'object') return { ok: false, error: 'critique was not valid JSON', provider: response.provider, model: response.model, vision: false };
     const value = parsed.value;
     const weaknesses = Array.isArray(value.weaknesses) ? value.weaknesses.filter((w) => w && typeof w === 'object').slice(0, 6).map((w) => finding(String(w.area ?? 'design'), ['blocker', 'major', 'minor'].includes(w.severity) ? w.severity : 'minor', String(w.evidence ?? w.issue ?? ''), String(w.fix ?? ''), 'critique')) : [];
+    // The five weighted categories, kept so the agent is told WHICH one is weak
+    // rather than only that the page scored 74. A page can average its way to a
+    // pass while its typography never had an idea.
+    const scores = categoryScores(value.scores);
+    const weighted = scores ? weightedScore(scores) : undefined;
+    const weakest = scores
+      ? Object.entries(scores).sort((a, b) => a[1] - b[1])[0]
+      : undefined;
     return {
       ok: true,
       provider: response.provider,
       model: response.model,
       vision: Boolean(response.meta?.imagesSent ?? (images.length > 0 && !response.meta?.imagesDropped)),
-      score: Number.isFinite(Number(value.score)) ? Math.max(0, Math.min(100, Number(value.score))) : undefined,
-      verdict: value.verdict === 'pass' ? 'pass' : 'iterate',
+      scores,
+      weakest: weakest && weakest[1] < 7 ? { area: weakest[0], score: weakest[1] } : undefined,
+      // The weighted sum is the honest number when the model gave categories;
+      // its own overall score is only a fallback.
+      score: Number.isFinite(weighted)
+        ? weighted
+        : (Number.isFinite(Number(value.score)) ? Math.max(0, Math.min(100, Number(value.score))) : undefined),
+      // A category under 7 is not a pass, whatever the model called it.
+      verdict: value.verdict === 'pass' && (!weakest || weakest[1] >= 7) ? 'pass' : 'iterate',
       summary: String(value.summary ?? '').slice(0, 300),
       strengths: Array.isArray(value.strengths) ? value.strengths.map(String).slice(0, 5) : [],
       weaknesses,
@@ -375,6 +422,16 @@ export function renderFindingsForModel(qa, { maxItems = 8 } = {}) {
   const lines = [];
   lines.push(`VISUAL QA round ${qa.round} — ${qa.rendered ? `rendered with ${qa.browser} (${qa.method})` : `NOT rendered (${qa.reason})`} — score ${qa.score}/100 (minimum ${qa.minScore}) — verdict: ${qa.verdict.toUpperCase()}`);
   if (qa.critique?.ok && qa.critique.summary) lines.push(`Director's summary: ${qa.critique.summary}`);
+  // Naming the weakest category is what turns "score 74" into work. A blended
+  // number tells the model it is close; "typography 3/10" tells it what to do.
+  if (qa.critique?.ok && qa.critique.scores) {
+    const scores = qa.critique.scores;
+    lines.push(`Scores — ${Object.entries(scores).map(([k, v]) => `${k} ${v}/10`).join(', ')} (every category must reach 7).`);
+    const under = Object.entries(scores).filter(([, v]) => v < 7).sort((a, b) => a[1] - b[1]);
+    if (under.length) {
+      lines.push(`THIS ROUND FAILS ON: ${under.map(([k, v]) => `${k} (${v}/10)`).join(', ')}. Spend the round on ${under[0][0]} before anything else — a page does not average its way to finished.`);
+    }
+  }
   if (qa.critique?.ok && qa.critique.strengths?.length) lines.push(`Keep: ${qa.critique.strengths.slice(0, 3).join('; ')}`);
   const ordered = [...qa.findings].sort((a, b) => (SEVERITY_WEIGHT[b.severity] ?? 0) - (SEVERITY_WEIGHT[a.severity] ?? 0)).slice(0, maxItems);
   if (ordered.length) {

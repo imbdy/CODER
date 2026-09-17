@@ -8,7 +8,7 @@
  */
 
 import { extractJson, extractCodeBlock } from './json.mjs';
-import { suggestedDelayMs, isDailyLimit } from './rate-limit.mjs';
+import { suggestedDelayMs, isDailyLimit, isLongCooldown } from './rate-limit.mjs';
 import { OllamaProvider } from './ollama.mjs';
 import { OpenAICompatibleProvider } from './openai-compatible.mjs';
 import { DeterministicProvider } from './deterministic.mjs';
@@ -134,6 +134,14 @@ export class ModelRouter {
    * Tokens per minute the active brain allows, when it says so.
    * The executor uses this to decide how much context it can afford per turn.
    */
+  /** The largest completion the active provider will accept, when it says. */
+  maxCompletionTokens() {
+    for (const provider of this.providers) {
+      if (provider?.ready && Number.isFinite(provider.maxCompletionTokens)) return provider.maxCompletionTokens;
+    }
+    return undefined;
+  }
+
   async tokensPerMinute() {
     const chain = await this.activeChain();
     const provider = chain.find((entry) => entry && entry.id !== 'deterministic');
@@ -276,7 +284,15 @@ export class ModelRouter {
           meta: { kind, payload },
         });
         if (!response.text?.trim()) {
-          errors.push(`${provider.id}: empty response`);
+          // "empty response" on its own sent a whole build to the deterministic
+          // engine with no way to tell why. A reasoning model that spent the
+          // entire completion budget thinking says so in finish_reason and in
+          // the reasoning token count, so carry both.
+          const why = [
+            response.finishReason ? `finish_reason=${response.finishReason}` : '',
+            response.reasoningTokens ? `${response.reasoningTokens} reasoning tokens of ${response.completionTokens ?? '?'}` : '',
+          ].filter(Boolean).join(', ');
+          errors.push(`${provider.id}: empty response${why ? ` (${why})` : ''}`);
           this.#emitCall({ provider, kind, phase, ok: false, note: 'empty' });
           break;
         }
@@ -297,8 +313,16 @@ export class ModelRouter {
           this.bus?.emit('warn', { message: `${provider.id}: daily quota exhausted — ${msg.slice(0, 200)}` });
           break;
         }
+        // The provider's own Retry-After beats anything parsed out of prose.
+        const advertised = Number(error?.details?.retryAfterMs) || suggestedDelayMs(msg);
+        if (isRate && isLongCooldown(advertised, Number(this.config?.runtime?.maxRetryWaitMs ?? 120000))) {
+          const mins = Math.round(advertised / 60000);
+          this.bus?.emit('warn', { message: `${provider.id}: quota exhausted for about ${mins} minute(s) — not retrying` });
+          errors[errors.length - 1] = `${provider.id}: quota exhausted, retry in ~${mins} minute(s) — ${msg.slice(0, 160)}`;
+          break;
+        }
         if (isRate && attempt < maxAttempts) {
-          const waitMs = suggestedDelayMs(msg) || Math.min(30000, 4000 * attempt);
+          const waitMs = advertised || Math.min(30000, 4000 * attempt);
           this.logger?.debug(`rate limited, waiting ${Math.round(waitMs)}ms (attempt ${attempt}/${maxAttempts})`);
           this.bus?.emit('warn', { message: `${provider.id} rate limited, waiting ${Math.round(waitMs / 100) / 10}s (attempt ${attempt}/${maxAttempts})` });
           await new Promise((r) => setTimeout(r, Math.min(waitMs + 1500, 70000)));

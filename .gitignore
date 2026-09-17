@@ -1,0 +1,10 @@
+node_modules/
+.forge/
+dist/
+*.log
+tmp-*/
+.DS_Store
+
+# secrets — never commit
+.env
+.env.local

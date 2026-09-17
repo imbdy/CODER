@@ -17,6 +17,8 @@
  */
 
 import { adjust, contrastRatio, ensureContrast, mix, withAlpha } from './color.mjs';
+import { ambitionRegister } from '../agent/prompts.mjs';
+import { negativeText } from './negation.mjs';
 
 /* ------------------------------------------------------------ directions ---- */
 
@@ -332,15 +334,22 @@ export function decorationFor(direction, { request = '', agreed = {} } = {}) {
   if (/\b(minimal|no decoration|nothing decorative|restrained|clean)\b/.test(`${avoid} ${emphasis}`)) layers = layers.slice(0, 1);
   const wants3d = /\b(3d|three\.?js|webgl|spatial|volumetric)\b/.test(hay);
   const depthWanted = wants3d || /\b(depth|immersive|dimensional)\b/.test(hay);
-  const rejected3d = /\b(3d|webgl|canvas|three)\b/.test(avoid);
-  const canvas = wants3d && !rejected3d;
+  const rejected3d = /\b(3d|webgl|canvas|three)\b/.test(avoid + ' ' + negativeText(request));
+  // A brief that asks for cinema earns the canvas even when it never says
+  // the word "webgl", and what it earns is a SUBJECT the camera studies
+  // rather than a lattice dimmed to 0.5 behind the type.
+  const cinematic = !rejected3d && ambitionRegister(hay) === 'cinematic';
+  const canvas = (wants3d || cinematic) && !rejected3d;
   if (depthWanted && !canvas && !layers.includes('scrim') && !layers.includes('vignette')) layers.push('vignette');
   return {
     budget: 2,
     layers: layers.slice(0, 2),
     dropped,
     canvas,
-    canvasReason: canvas
+    cinematic,
+    canvasReason: cinematic
+      ? 'a scroll-driven instrument: one instanced structure the camera studies, a generated environment map, an additive depth field, DPR capped at 2, adaptive quality, paused offscreen, a composed static frame for reduced-motion'
+      : canvas
       ? 'a single low-contrast lattice behind the type: one canvas, DPR capped at 1.75, paused offscreen, hidden below 60rem, CSS depth as the fallback'
       : (rejected3d ? '3D was rejected — depth comes from layered value steps and type scale' : (depthWanted ? 'depth via layered scrim and value steps; a canvas would not add meaning here' : 'no depth layer needed')),
   };
@@ -568,7 +577,12 @@ ${decoration.layers.includes('vignette') && direction.theme === 'dark' ? `.ad-vi
 ${decoration.layers.includes('vignette') && direction.theme !== 'dark' ? '/* vignette omitted: darkening a paper substrate muddies it */' : ''}
 ${decoration.layers.includes('rule') ? `.ad-rules { background-image: linear-gradient(to right, var(--color-border) 1px, transparent 1px); background-size: calc(100% / 4) 100%; opacity: 0.55; }
 @media (max-width: 60rem) { .ad-rules { background-size: calc(100% / 2) 100%; } }` : ''}
-${decoration.canvas ? `.ad-canvas { z-index: 0; }
+${decoration.canvas ? `.ad-canvas { z-index: 0; }${decoration.cinematic ? `
+/* Cinematic: the canvas carries a subject, so it is not dimmed to a wash and it
+   is not dropped on small screens — adaptive quality thins it instead. */
+.ad-canvas canvas { opacity: 1 !important; }
+@media (max-width: 60rem) { .ad-canvas { display: block !important; } }
+@media (pointer: coarse) { .ad-canvas canvas { opacity: 0.85 !important; } }` : ''}
 .ad-canvas canvas { width: 100% !important; height: 100% !important; display: block; opacity: ${direction.theme === 'dark' ? '0.62' : '0.5'}; }
 @media (max-width: 60rem), (pointer: coarse) { .ad-canvas { display: none; } }
 @media (prefers-reduced-motion: reduce) { .ad-canvas { display: none; } }` : ''}

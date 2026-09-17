@@ -8,6 +8,10 @@
 import fs from 'node:fs';
 import { ModelProvider, CAPABILITY } from './provider.mjs';
 import { ModelError } from '../core/errors.mjs';
+import { retryAfterMs } from './rate-limit.mjs';
+
+/** Models that emit a separate hidden-reasoning channel and bill it as completion tokens. */
+const REASONING_MODEL = /gpt-oss|deepseek-r1|\bo[1345]\b|qwq|magistral|reason/i;
 
 export class OpenAICompatibleProvider extends ModelProvider {
   constructor(config = {}) {
@@ -22,9 +26,28 @@ export class OpenAICompatibleProvider extends ModelProvider {
     this.temperature = config.temperature ?? 0.35;
     this.timeoutMs = config.timeoutMs ?? 180000;
     this.extraHeaders = config.headers ?? {};
-    // Explicit TPM beats discovery; Groq's free tier is 8k and must be paced.
-    this.configuredTpm = Number(config.tokensPerMinute) || (/groq\.com/.test(this.baseUrl) ? 8000 : undefined);
+    // A starting guess only, used before any response has told us the truth.
+    // Hardcoding 8000 for every groq.com URL meant a model with a much larger
+    // window was paced as though it had the smallest one: groq/compound
+    // publishes 70k tokens/minute and was being budgeted at 8k.
+    this.configuredTpm = Number(config.tokensPerMinute) || undefined;
+    this.assumedTpm = /groq\.com/.test(this.baseUrl)
+      ? (/compound/i.test(this.model) ? 70000 : 8000)
+      : undefined;
+    // Asking for more completion than the endpoint allows is a hard 400, and
+    // groq/compound caps it at 8192 while the gpt-oss models allow 65536.
+    this.maxCompletionTokens = Number(config.maxCompletionTokens)
+      || (/compound/i.test(this.model) ? 8192 : undefined);
     this.lastRateLimit = undefined;
+    // Reasoning models (gpt-oss, o-series, deepseek-r1…) spend completion tokens
+    // on hidden reasoning BEFORE they write anything. Measured on Groq
+    // gpt-oss-20b at max_tokens 2200: the default effort spent 1909 tokens
+    // reasoning, returned finish_reason "length" and a truncated answer — and
+    // with a full-size system prompt it returned NOTHING, which the router
+    // reported as a bare "empty response" and the build fell back to the
+    // deterministic engine. On a small token window the answer must be paid for
+    // before the deliberation, so these models default to low effort.
+    this.reasoningEffort = config.reasoningEffort ?? (REASONING_MODEL.test(this.model) ? 'low' : undefined);
     // Vision: explicit config wins; otherwise infer from well-known multimodal model names.
     this.vision = typeof config.vision === 'boolean' ? config.vision : /gpt-4o|gpt-4\.1|gpt-5|\bo[34]\b|claude|gemini|pixtral|llava|vision|qwen[\d.]*-?vl|minicpm-v|gemma-?3|grok|nova|phi-4-multimodal|omni/i.test(this.model);
   }
@@ -91,6 +114,7 @@ export class OpenAICompatibleProvider extends ModelProvider {
           messages: chatMessages,
           temperature: temperature ?? this.temperature,
           max_tokens: maxTokens ?? 4096,
+          ...(this.reasoningEffort ? { reasoning_effort: this.reasoningEffort } : {}),
           ...(json ? { response_format: { type: 'json_object' } } : {}),
         }),
       });
@@ -100,9 +124,32 @@ export class OpenAICompatibleProvider extends ModelProvider {
     }
 
     if (!response.ok) {
-      this.recordFailure();
+      // A 429 carries the same x-ratelimit-* headers as a success, and it is the
+      // response that most needs to inform pacing. Reading them only on the happy
+      // path meant the pacer learned nothing from the very failure it exists to
+      // prevent, and retried straight back into the same window.
+      this.lastRateLimit = readRateLimit(response.headers) ?? this.lastRateLimit;
       const body = await response.text().catch(() => '');
-      throw new ModelError(`openai-compatible responded ${response.status}: ${body.slice(0, 300)}`);
+      // Groq rejects a request whose model answered through the NATIVE tool
+      // channel while no tools were declared ("Tool choice is none, but model
+      // called a tool"), and hands the generation back in `failed_generation`.
+      // gpt-oss does exactly that with this agent's text tool protocol: the work
+      // is complete and well-formed, it simply arrived in the wrong envelope.
+      // Throwing it away cost a whole build and read as a model failure.
+      const salvaged = failedGeneration(body);
+      if (salvaged) {
+        this.recordSuccess({ promptTokens: 0, completionTokens: 0, ms: Date.now() - started });
+        return {
+          text: salvaged, provider: this.id, model: this.model, promptTokens: 0, completionTokens: 0,
+          ms: Date.now() - started, raw: { salvagedFrom: 'tool_use_failed' }, imagesSent,
+          rateLimit: this.lastRateLimit, finishReason: 'tool_use_failed', reasoningTokens: 0,
+        };
+      }
+      this.recordFailure();
+      // Carry the provider's own cooldown so the router does not invent one.
+      throw new ModelError(`openai-compatible responded ${response.status}: ${body.slice(0, 300)}`, {
+        details: { status: response.status, retryAfterMs: retryAfterMs(response.headers?.get?.('retry-after')) },
+      });
     }
 
     // Token-per-minute accounting from the provider itself. Groq's free tier is
@@ -111,8 +158,18 @@ export class OpenAICompatibleProvider extends ModelProvider {
     this.lastRateLimit = readRateLimit(response.headers);
     const data = await response.json();
     // Groq compound puts reasoning in `message.reasoning` and sometimes content is a guide, not JSON
-    const msg = data?.choices?.[0]?.message ?? {};
+    const choice = data?.choices?.[0] ?? {};
+    const msg = choice.message ?? {};
+    const finishReason = choice.finish_reason ?? '';
+    const reasoningTokens = data?.usage?.completion_tokens_details?.reasoning_tokens ?? 0;
     let text = msg?.content ?? '';
+    // A reasoning model that ran out of budget mid-thought leaves `content`
+    // empty and the work in `reasoning`. When that reasoning already contains
+    // the fenced artefact the caller asked for, it is an answer in the wrong
+    // channel, not a failed call — salvage it rather than discarding the spend.
+    if (!String(text).trim() && typeof msg?.reasoning === 'string' && /```/.test(msg.reasoning)) {
+      text = msg.reasoning;
+    }
     // If json mode was requested but content is not JSON, try reasoning (Groq compound) or combined
     if (json) {
       const reasoning = msg?.reasoning ?? '';
@@ -130,12 +187,19 @@ export class OpenAICompatibleProvider extends ModelProvider {
     const promptTokens = data?.usage?.prompt_tokens ?? 0;
     const completionTokens = data?.usage?.completion_tokens ?? 0;
     this.recordSuccess({ promptTokens, completionTokens, ms: Date.now() - started });
-    return { text, provider: this.id, model: this.model, promptTokens, completionTokens, ms: Date.now() - started, raw: data, imagesSent, rateLimit: this.lastRateLimit };
+    return { text, provider: this.id, model: this.model, promptTokens, completionTokens, ms: Date.now() - started, raw: data, imagesSent, rateLimit: this.lastRateLimit, finishReason, reasoningTokens };
   }
 
-  /** Tokens per minute this endpoint allows, once a response has told us. */
+  /**
+   * Tokens per minute this endpoint allows.
+   *
+   * Order matters: an explicit setting wins, then what the provider ITSELF
+   * reported on the last response, and only then the per-host guess. The guess
+   * used to win outright, so a real `x-ratelimit-limit-tokens: 70000` was
+   * ignored for the life of the process.
+   */
   get tokensPerMinute() {
-    return this.configuredTpm ?? this.lastRateLimit?.limitTokens;
+    return this.configuredTpm ?? this.lastRateLimit?.limitTokens ?? this.assumedTpm;
   }
 
   /**
@@ -164,6 +228,26 @@ export class OpenAICompatibleProvider extends ModelProvider {
     await new Promise((resolve) => setTimeout(resolve, waitMs));
     this.lastRateLimit = { ...limit, remainingTokens: Math.min(limit.limitTokens, limit.remainingTokens + shortfall) };
     return waitMs;
+  }
+}
+
+/**
+ * The model's own output, rescued from a `tool_use_failed` error body.
+ *
+ * Returned fenced as json so the ordinary tool-call parser finds it in the same
+ * shape it would have found in a normal reply.
+ */
+function failedGeneration(body) {
+  try {
+    const parsed = JSON.parse(String(body ?? ''));
+    const error = parsed?.error ?? {};
+    if (error.code !== 'tool_use_failed') return '';
+    const generation = String(error.failed_generation ?? '').trim();
+    return generation ? `\`\`\`json
+${generation}
+\`\`\`` : '';
+  } catch {
+    return '';
   }
 }
 

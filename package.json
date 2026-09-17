@@ -1,8 +1,8 @@
 {
   "name": "artisan",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
-  "description": "Artisan - a creative frontend design & engineering agent: discuss > agree > build > render > critique > iterate > test",
+  "description": "Artisan — a creative frontend design agent: discuss → agree → build → render → critique → iterate",
   "type": "module",
   "engines": {
     "node": ">=22"
@@ -16,19 +16,15 @@
   "scripts": {
     "artisan": "node ./bin/artisan.mjs",
     "chat": "node ./bin/artisan.mjs chat",
-    "test": "node --test tests/unit/*.test.mjs",
-    "test:agent": "node --test tests/agent/design-agent.test.mjs",
-    "test:all": "node --test tests/unit/*.test.mjs tests/agent/*.test.mjs",
-    "e2e": "node ./scripts/e2e.mjs",
-    "serve": "node ./scripts/serve.mjs",
     "doctor": "node ./bin/artisan.mjs doctor",
     "skills": "node ./bin/artisan.mjs skills list",
-    "test:flow": "node --test tests/agent/conversation-flow.test.mjs"
+    "serve": "node ./scripts/serve.mjs"
   },
   "keywords": [
     "agent",
     "frontend",
     "design",
+    "webgl",
     "autonomous"
   ],
   "license": "MIT"

@@ -30,6 +30,9 @@ export const DEFAULT_CONFIG = {
       baseUrl: process.env.ARTISAN_BASE_URL || (process.env.ARTISAN_API_KEY?.startsWith('gsk_') ? 'https://api.groq.com/openai/v1' : ''),
       apiKey: process.env.ARTISAN_API_KEY || '',
       model: process.env.ARTISAN_MODEL || (process.env.ARTISAN_API_KEY?.startsWith('gsk_') ? 'groq/compound' : ''),
+      // Undefined lets the provider decide per model: reasoning models default to
+      // 'low' so the small token window buys an answer instead of deliberation.
+      reasoningEffort: process.env.REASONING_EFFORT || undefined,
       temperature: 0.35,
       timeoutMs: 180000,
     },
@@ -43,7 +46,11 @@ export const DEFAULT_CONFIG = {
     maxImproveIterations: 1,
     maxToolCallsPerStep: 2,
     maxRepairAttempts: 1,
-    /** Implementation-loop history budget (tokens). Small local models get trimmed harder by the router heuristics. */
+    /**
+     * Implementation-loop history budget (tokens). A ceiling, not a target: the
+     * actual history is whatever is left of one request after the system prompt
+     * and the answer are paid for.
+     */
     contextBudgetTokens: 24000,
     /** Budget for skill bodies injected into the implementation prompt (tokens). */
     skillBudgetTokens: 22000,
@@ -55,10 +62,32 @@ export const DEFAULT_CONFIG = {
     agentRepairPass: true,
     maxAgentRepairPasses: 2,
     /** Visual QA rounds per build: undefined = by complexity (trivial 1, standard 2, complex 3). */
-    maxQaRounds: undefined,
+    maxQaRounds: 2,
     qwenTools: true,
-    /** Per-turn generation limit. */
+    /**
+     * Per-turn generation limit — an upper bound, rarely the binding one.
+     *
+     * Measured on Groq: groq/compound accepts at most 8192 completion tokens,
+     * while the gpt-oss models accept 65536. Either way the TOKENS-PER-MINUTE
+     * window and `maxRequestTokens` below bite first, so raising this number on
+     * its own changes nothing. Every model here has a 131k context window;
+     * context is not what limits a turn, the rate window is.
+     */
     maxTokens: 8192,
+    /**
+     * Ceiling on a SINGLE request (prompt + completion), independent of the
+     * advertised tokens-per-minute. Router models publish the router's window,
+     * not the backing model's, so this is what keeps a turn deliverable.
+     */
+    /*
+     * Measured on Groq: every model here has a 131k context window, so context
+     * is not the limit — the rate window is. The backing model behind
+     * groq/compound allows ~30k tokens a minute, so a 20k request is deliverable
+     * and leaves room; anything larger than the window can never succeed at all.
+     */
+    maxRequestTokens: 20000,
+    /** Below this ceiling the system prompt carries the spec instead of skill bodies. */
+    leanBelowRequestTokens: 26000,
   },
   skills: {
     roots: ['skills'],
@@ -159,7 +188,9 @@ function envOverrides() {
     };
   }
   normalizeOrder(patch);
-  if (env.REASONING_EFFORT) patch.runtime.reasoningEffort = env.REASONING_EFFORT;
+  // Reasoning effort belongs to the provider that sends it, not to the runtime:
+  // it was parsed into runtime.reasoningEffort, where nothing ever read it.
+  if (env.REASONING_EFFORT) { patch.runtime.reasoningEffort = env.REASONING_EFFORT; apiPatch({ reasoningEffort: env.REASONING_EFFORT }); }
   if (env.ARTISAN_MAX_IMPROVEMENTS) patch.runtime.maxImproveIterations = Number(env.ARTISAN_MAX_IMPROVEMENTS);
   if (env.ARTISAN_MAX_STEPS) patch.runtime.maxPlanSteps = Number(env.ARTISAN_MAX_STEPS);
   if (env.ARTISAN_CONTEXT_BUDGET) patch.runtime.contextBudgetTokens = Number(env.ARTISAN_CONTEXT_BUDGET);

@@ -54,12 +54,42 @@ export const QUALITY_BAR = [
   'Colour: a dominant substrate plus ONE signal accent beats an evenly distributed palette. 60/30/10. Dark substrates are not #000 and not blue-grey by default. Body text must clear 4.5:1 on EVERY surface it lands on, not just the page background. A gradient is allowed as one atmospheric layer, never on text, never purple-to-blue on white.',
   'Composition: one focal point per viewport, hierarchy readable in three seconds, asymmetry and overlap over centred stacks. The hero is never a centred heading plus subtitle plus two pill buttons. Sections earn their place by answering a question the previous one raised; alternate dense and quiet; never three equal blocks in a row.',
   'Depth and material come from layering, value steps, light direction and 1px structure — not from blobs. Decoration has a budget of two layers per viewport and each one states its purpose. Film grain at 2-4%, one glass surface at most, vignette or scrim only for legibility over imagery.',
-  'Motion: one well-orchestrated page load with a staggered delay ladder (60-90ms) beats scattered micro-interactions. One easing family. Transform and opacity only. At most two scroll-scrubbed effects. Content must never depend on JS to become visible — hide only under html[data-js] and keep a reduced-motion path that shows everything.',
-  'Technology serves the design, cheapest tier first: CSS, then SVG/canvas, then WebGL only where the design needs real depth — bounded (one canvas, DPR <= 2, paused when hidden, static fallback, never on a coarse pointer without one). GSAP only for genuine scroll choreography.',
+  'Motion: one well-orchestrated page load with a staggered delay ladder (60-90ms) beats scattered micro-interactions. One easing family. Transform and opacity only in the DOM layer. Content must never depend on JS to become visible — hide only under html[data-js] and keep a reduced-motion path that shows everything.',
+  'Technology serves the design. Default to the cheapest tier that delivers it: CSS, then SVG/canvas, then WebGL. Whatever tier you reach for is bounded — one canvas, DPR <= 2, paused when hidden, disposed on teardown, a designed static composition for reduced-motion and coarse pointers. GSAP only for genuine scroll choreography.',
   'Copy must pass the specificity test: if a competitor could paste the line unchanged, rewrite it. Name the mechanism. No "Everything you need", no "Powerful yet simple", no "Get started today", no lorem ipsum, no TODO. If the product has no name, coin a short pronounceable one and use it consistently.',
   'Craft: semantic HTML (header/main/section/footer, exactly one h1), labelled inputs, alt text, :focus-visible, no alert(), null-guarded querySelector, responsive at 390 / 834 / 1440 with zero horizontal overflow, tap targets >= 44px on touch, nothing readable below 12px.',
-  'Generic signals that fail review on sight: purple/blue AI gradients, glass everywhere, floating blobs or orbs, bento by default, three identical cards, an oversized bold sans headline with no typographic idea, invented customer logos, decoration without a story.',
+  'Generic signals that fail review on sight: purple/blue AI gradients, glass everywhere, floating blobs or orbs, bento by default, three identical cards, an oversized bold sans headline with no typographic idea, invented customer logos, decoration without a story. This applies to a 3D scene exactly as it applies to a section: three spheres drifting on a gradient is the canvas version of three identical cards. If the scene has no subject, delete it and spend the budget on type.',
 ];
+
+/**
+ * The ambition register.
+ *
+ * The bar above is tuned for restraint, which is right for most briefs and wrong
+ * for the one that asks for cinema. "Decoration has a budget of two layers" and
+ * "at most two scroll-scrubbed effects" are guardrails against slop; applied to
+ * a brief that asks for an immersive spatial narrative they cap the work at a
+ * hero with a gradient. When the brief asks for it, the ceiling lifts and the
+ * demands get HARDER, not softer.
+ */
+export const CINEMATIC_BAR = [
+  'THIS BRIEF ASKS FOR A CINEMATIC, IMMERSIVE PAGE. The restraint budgets above are lifted — but ambition is not permission to decorate. Every layer still states its purpose, and the page is judged against film and product launch work, not against other websites.',
+  'Build ONE continuous experience, not a stack of sections with effects on them. Decide the journey first: a sequence of named moments, in order, each answering the question the previous one raised. Write that list before any code — it is the storyboard, and the camera, copy and density all follow it.',
+  'Scroll is a scrub, never a trigger. One normalised progress value 0 -> 1 drives camera, materials, density, exposure and copy; scrubbing backwards must look identical. Nothing animates on a timer except ambient drift.',
+  'The canvas needs a SUBJECT — a mechanism, an instrument, a structure, a field, the product itself. Not spheres. Not blobs. If you cannot name what the viewer is looking at in one noun, you do not have a scene yet.',
+  'Depth is earned with light: two sources of different colour temperature, a generated environment map, fog matched to the substrate, ACES tone mapping and a narrow fov (30-36). A wide fov with one white light is why a render looks like a video game.',
+  'Copy lives in real DOM, positioned in world space if it should feel spatial — never baked into a texture. It stays selectable, accessible and sharp, and it must still read top to bottom with JavaScript disabled.',
+  'Performance is part of the design: one canvas, one rAF, instanced or Points geometry above ~50 repeats, additive layers with depthWrite off, DPR capped at 2, adaptive degradation in ordered steps, paused when hidden, disposed on teardown.',
+  'A coarse pointer and prefers-reduced-motion each get a DESIGNED composition — a chosen frame of the journey with every chapter visible — not a blank canvas and not the full scene at a lower frame rate.',
+  'Load the webgl-scroll-journey skill and follow its architecture: fixed canvas, tall empty scroll runway, camera keyframes on a Catmull-Rom curve, span() ranges, DOM anchored by projection, adaptive quality, and a ?s= parameter so any moment can be reviewed without scrolling to it.',
+];
+
+/** Does the brief actually ask for the cinematic register, or merely mention 3D in passing? */
+export function ambitionRegister(text = '') {
+  const positive = String(text ?? '');
+  return /\b(cinematic|immersive|filmic|spatial|scroll journey|camera journey|fly.?through|scrollytelling|3d|webgl|three\.?js|awwwards|scroll.scrubbed|storytelling)\b/i.test(positive)
+    ? 'cinematic'
+    : 'restrained';
+}
 
 /** Compact TODO rendering shared by prompts and status output. */
 export function renderTodos(todos = []) {
@@ -81,7 +111,11 @@ export function renderTodos(todos = []) {
 export function buildAgentSystemPrompt({
   inspection = null, spec = null, skillsContext = '', skills = undefined, skillIndex = [], todos = [], mode = 'create',
   agreedBlock = '', brief = '', loadedSkillIds = [], existingOutline = '', artDirectionBlock = '', skillDigest = '',
+  register = undefined,
 } = {}) {
+  // Restraint is the default and the right default. A brief that asks for cinema
+  // gets a harder bar instead of a smaller one.
+  const ambition = register ?? ambitionRegister(brief);
   const skillBodies = typeof skills === 'string' ? skills : (skills?.contextBlock ?? skillsContext ?? '');
   const lines = [];
   lines.push(
@@ -99,6 +133,7 @@ export function buildAgentSystemPrompt({
     '',
     'QUALITY BAR',
     ...QUALITY_BAR.map((line) => `- ${line}`),
+    ...(ambition === 'cinematic' ? ['', 'AMBITION — CINEMATIC REGISTER', ...CINEMATIC_BAR.map((line) => `- ${line}`)] : []),
     '',
     ...stackRules(inspection),
   );
@@ -185,7 +220,19 @@ export function buildConversationSystemPrompt({ workspaceDir, inspection, agreed
 export function buildPlanPrompt({ brief, inspection, skillsBlock, mode = 'create', existingOutline = '', tech = {}, skillIds = [], artDirectionBlock = '' }) {
   return [
     'DESIGN SPEC + PLAN — you are the design lead at a studio known for identities that could not be mistaken for anyone else\'s. This client has already rejected templated work. Decide the design before any code is written, then break the work into structured TODOs.',
+    // Award-level work is not effort spread evenly; it is one moment designed
+    // first and everything else built to serve it. Asking for the header first
+    // is how pages end up competent and forgettable.
+    'DECIDE IN THIS ORDER, and put the answers in the spec:',
+    '1. THE SIGNATURE MOMENT — the single frame someone would screenshot. Name it in one sentence before anything else ("the filter opens and the camera passes through it while the headline holds"). Not the header. If you cannot name it, you do not have a design yet.',
+    '2. THE TENSION — one idea in conflict that every later choice resolves toward (precision vs warmth, mass vs light, archive vs machine).',
+    '3. THE DISPLAY TYPEFACE — the identity lives here. A real face with a point of view, never Inter/Roboto/Open Sans/Arial as the identity. State the pairing and the display-to-body scale ratio (10:1 or better).',
+    '4. THE COMPOSITION around that moment — where the eye lands and what it does next.',
+    '5. THE MOTION, decided with the visual rather than added after — one custom easing family (never the CSS defaults) and a load ladder in milliseconds.',
+    '6. WHAT YOU CUT. Three things perfect beats ten things present.',
+    '',
     'Reason about: visual hierarchy, composition, typography, spacing/rhythm, contrast, depth/materiality, motion language, interaction, storytelling, focal point, responsive behaviour, performance. Commit to specifics — real font names, real hex values, real clamp() ranges, a named hero composition. Take one justified risk. Reject generic patterns.',
+    'The build is scored on five weighted categories, each out of 10, and every one must reach 7: typography 25%, composition 25%, motion 20%, colour 15%, craft 15%. Plan so that none of them is the weak one.',
     '',
     'BRIEF:',
     brief.text,

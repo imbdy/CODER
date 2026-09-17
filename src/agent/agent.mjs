@@ -252,10 +252,33 @@ export async function runAgent(input, {
   // the expensive plan prompt can be sized to fit one token window instead of
   // stalling on the provider's rate limit.
   const tpm = await router.tokensPerMinute().catch(() => undefined);
-  const tightContext = Boolean(tpm && tpm < Number(config?.runtime?.tightContextBelowTpm ?? 12000));
+  // A ROUTER's advertised window is not the backing model's window. groq/compound
+  // publishes 70k tokens/minute and then dispatches to llama-4-scout, whose own
+  // limit is far smaller: trusting the header sent ~40k-token turns that were
+  // rejected on arrival, four retries deep, and the build fell back to the
+  // deterministic engine looking like a model failure. So the size of ONE request
+  // is capped on its own, and the advertised window only decides how many
+  // requests fit in a minute — which is where a big window actually pays.
+  // An UNKNOWN window must fail open. Falling back to 8000 here meant any
+  // provider that publishes no x-ratelimit headers — OpenAI, Anthropic through a
+  // bridge, an opencode/OpenRouter gateway, a local vLLM — was throttled to
+  // Groq's free-tier shape for no reason, turning 8k-token turns into 2.5k ones.
+  // If nobody has told us the limit, spend up to the configured ceiling and let
+  // a real 429 teach us (the provider records it, and pacing adapts from there).
+  const configuredCeiling = Number(config?.runtime?.maxRequestTokens ?? 12000);
+  const requestCeiling = Number.isFinite(tpm) && tpm > 0
+    ? Math.min(Math.floor(tpm * 0.85), configuredCeiling)
+    : configuredCeiling;
+  const tightContext = requestCeiling < Number(config?.runtime?.leanBelowRequestTokens ?? 20000);
   if (tightContext) {
-    stepBudget = Math.min(stepBudget, Number(config?.runtime?.maxAgentStepsTight ?? 10));
-    bus.emit(EVENT.THOUGHT, { phase: 'budget', text: `provider allows ${tpm} tokens/min: skills inform PLANNING only, the implementation prompt carries the spec instead of skill bodies, ${stepBudget} turns max` });
+    // A tight window caps what one turn can EMIT (2200 tokens instead of 8192),
+    // so the same page needs MORE turns, not fewer. Cutting the budget to 10
+    // here did the opposite: a measured run on gpt-oss-20b spent its ten turns
+    // writing index.html and styles/main.css and stopped one file short of
+    // scripts/main.js, which the structure check then failed. The per-turn
+    // token cap is the real constraint and the router already paces each call.
+    stepBudget = Math.min(stepBudget, Number(config?.runtime?.maxAgentStepsTight ?? 18));
+    bus.emit(EVENT.THOUGHT, { phase: 'budget', text: `provider window ${Number.isFinite(tpm) && tpm > 0 ? `${tpm} tokens/min` : 'not published — assuming it is generous'}, one request capped at ${requestCeiling}: skills inform PLANNING only, the implementation prompt carries the spec instead of skill bodies, ${stepBudget} turns max` });
   }
   bus.emit(EVENT.THOUGHT, { phase: 'art-direction', text: artBlock });
 
@@ -353,8 +376,27 @@ export async function runAgent(input, {
     skillDigest: tightContext ? skills.ids.join(', ') : '',
   });
   const messages = [{ role: 'user', content: kickoffMessage({ brief, todoManager, inspection }) }];
-  const historyBudget = tightContext ? Math.max(700, Math.floor((tpm ?? 8000) * 0.12)) : Number(config?.runtime?.contextBudgetTokens ?? 24000);
-  const turnTokenCap = tightContext ? Math.min(2200, Math.floor((tpm ?? 8000) * 0.28)) : Math.min(8192, Number(config?.runtime?.maxTokens ?? 8192));
+  // Both budgets are carved out of what ONE request may be, not out of the rate
+  // limit: the system prompt is re-sent every turn, so it is measured and the
+  // remainder is split between history and the answer. The answer gets the
+  // larger share — a turn that cannot finish a file wastes the whole request.
+  //
+  // `tightContext` decides only whether skill BODIES ride along in the system
+  // prompt. It used to also switch the budgets to fixed numbers, which put a
+  // cliff in the middle of the range: one token over the threshold and history
+  // jumped to 24000 regardless of what the request could actually carry.
+  const systemTokens = Math.ceil(system.length / 4);
+  const spare = Math.max(1200, requestCeiling - systemTokens);
+  const modelCompletionCap = router.maxCompletionTokens?.() ?? Number(config?.runtime?.maxTokens ?? 8192);
+  const turnTokenCap = Math.max(1200, Math.min(
+    Number(config?.runtime?.maxTokens ?? 8192),
+    modelCompletionCap,
+    Math.floor(spare * 0.55),
+  ));
+  const historyBudget = Math.max(700, Math.min(
+    Number(config?.runtime?.contextBudgetTokens ?? 24000),
+    Math.floor(spare * 0.4),
+  ));
   const maxQaRounds = Number(config?.runtime?.maxQaRounds ?? (complexity === 'complex' ? 3 : complexity === 'trivial' ? 1 : 2));
   const MAX_REPAIR = Number(config?.runtime?.maxAgentRepairPasses ?? 2);
 
@@ -390,7 +432,7 @@ export async function runAgent(input, {
       const css = cssRel ? readWorkspaceFile(workspaceDir, cssRel) ?? '' : '';
       qa = await runVisualQa({ workspaceDir, entry, config, spec, agreed: brief.agreed, router, bus, outDir, round, mode: brief.mode, html, css, requirements: briefRequirements });
     }
-    qaRounds.push({ round, step, reason, rendered: qa.rendered, method: qa.method, score: qa.score, verdict: qa.verdict, findings: qa.findings, screenshots: qa.screenshots, coverage: qa.coverage, critique: qa.critique ? { provider: qa.critique.provider, model: qa.critique.model, vision: qa.critique.vision, summary: qa.critique.summary, score: qa.critique.score, verdict: qa.critique.verdict } : undefined, reason_unrendered: qa.reason, ms: qa.ms });
+    qaRounds.push({ round, step, reason, rendered: qa.rendered, method: qa.method, score: qa.score, verdict: qa.verdict, findings: qa.findings, screenshots: qa.screenshots, coverage: qa.coverage, critique: qa.critique ? { provider: qa.critique.provider, model: qa.critique.model, vision: qa.critique.vision, summary: qa.critique.summary, score: qa.critique.score, verdict: qa.critique.verdict, scores: qa.critique.scores, weakest: qa.critique.weakest } : undefined, reason_unrendered: qa.reason, ms: qa.ms });
     note(step, `visual QA round ${round}: ${qa.rendered ? qa.method : `NOT rendered (${qa.reason})`} score ${qa.score} verdict ${qa.verdict} (${qa.findings.length} findings)`);
     const qaTodo = todoManager.list().find((t) => /visual qa|render|critique/i.test(t.description) || t.id === 'QA');
     if (qaTodo && qa.verdict === 'pass') { try { for (const dep of qaTodo.dependencies ?? []) if (todoManager.get(dep)?.status !== 'completed') todoManager.update(dep, { status: 'completed', note: 'auto: preceded visual QA pass' }); if (qaTodo.status !== 'completed') todoManager.update(qaTodo.id, { status: 'completed', note: `visual QA pass ${qa.score}` }); } catch {} }
@@ -689,15 +731,31 @@ export function parseAgentOutput(text) {
   let summary = '';
   for (const item of items) {
     if (item.type === 'file') { fileWrites.push(item); continue; }
-    for (const entry of item.entries) {
-      if (!entry) continue;
+    for (const emitted of item.entries) {
+      if (!emitted) continue;
+      // A model that answers through its NATIVE tool channel wraps this
+      // agent's protocol in {name, arguments}: gpt-oss emits
+      // {"name":"repo_browser.write_file","arguments":{"tool":"write_file","args":{...}}}.
+      // The inner object IS the call — unwrap it rather than inventing a tool
+      // named "repo_browser.write_file" with the real call as its arguments.
+      const entry = unwrapNativeCall(emitted);
       if (entry.done === true) { done = true; summary = String(entry.summary ?? '').trim(); continue; }
-      const tool = typeof entry.tool === 'string' ? entry.tool : (typeof entry.name === 'string' ? entry.name : '');
+      const call = entry;
+      const tool = typeof call.tool === 'string' ? call.tool : (typeof call.name === 'string' ? call.name : '');
       if (!tool) continue;
-      calls.push({ at: item.at, tool, args: entry.args ?? entry.arguments ?? {} });
+      // Namespaced names ("functions.write_file", "repo_browser.write_file")
+      // refer to the same tool this agent already knows.
+      calls.push({ at: item.at, tool: tool.split('.').pop(), args: call.args ?? call.arguments ?? {} });
     }
   }
   return { think: firstParagraph(raw.split('```')[0]), fileWrites, calls, done, summary };
+}
+
+/** One level of native tool-call envelope removed, when it wraps a real call. */
+function unwrapNativeCall(entry) {
+  const inner = entry?.arguments;
+  if (inner && typeof inner === 'object' && !Array.isArray(inner) && (typeof inner.tool === 'string' || inner.done === true)) return inner;
+  return entry;
 }
 
 function normalizeEntries(value) {

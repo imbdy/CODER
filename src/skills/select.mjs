@@ -10,6 +10,7 @@
  */
 
 import { extractJson } from '../model/json.mjs';
+import { ambitionRegister } from '../agent/prompts.mjs';
 import { createRetriever } from './retriever.mjs';
 import { estimateTokens } from '../core/util.mjs';
 
@@ -52,6 +53,14 @@ export function requiredSkillsFor({ tech = {}, inspection = {}, brief = {}, regi
   if (/\b(icon|illustration|diagram|logo|wordmark|svg|texture|grain)\b/.test(text)) need.add('svg-craft');
   if (/\b(scroll|parallax|sticky|pin|scrub|reveal|stagger)\b/.test(text) || animation === 'gsap') need.add('scroll-choreography');
   if (depth !== 'css' || animation === 'gsap' || /\b(performance|fast|60fps|lighthouse)\b/.test(text)) need.add('performance-budget');
+  // A brief that asks for cinema must get the journey architecture, not just the
+  // Three.js basics: without it the model reaches for a hero canvas with a few
+  // shapes in it, which is the 3D form of a templated page.
+  if (ambitionRegister(text) === 'cinematic') {
+    need.add('cinematic-direction'); need.add('webgl-scroll-journey'); need.add('threejs'); need.add('shaders');
+    need.add('3d-performance'); need.add('scroll-choreography'); need.add('performance-budget');
+    if (isReact) need.add('react-three-fiber'); else need.add('vanilla-motion');
+  }
   if (depth === 'threejs') { need.add('threejs'); need.add('3d-performance'); if (!isReact) need.add('vanilla-motion'); }
   if (depth === 'r3f') { need.add('react-three-fiber'); need.add('threejs'); need.add('3d-performance'); }
   if (depth === 'shader') { need.add('shaders'); need.add('webgl'); need.add('3d-performance'); }

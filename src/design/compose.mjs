@@ -8,6 +8,7 @@
 
 import { positiveText } from './negation.mjs';
 import { copyFor, isPlaceholderBrand, lexiconFor } from './copy.mjs';
+import { navLinksForSections } from './emit-site.mjs';
 
 const SECTION_LIBRARY = {
   nav: { purpose: 'orientation', layouts: ['minimal-links', 'split-cta', 'with-status'], density: 'low' },
@@ -115,9 +116,45 @@ export function composePage({ request = '', taskType = 'create-page', projectKin
     };
   });
 
+  // The nav is the only section whose content depends on the others: it may only
+  // link to sections that survived planning. Built here, once the plan is final.
   if (projectKind === 'landing-page' && !sections.some((section) => ['showcase', 'testimonials', 'process', 'proof'].includes(section.type))) {
     notes.push('composition lacks a credibility section — the page would read as a template');
   }
+
+  /**
+   * Every internal link must land on a section that exists.
+   *
+   * Run on BOTH return paths: the art-direction pass returns early, and when
+   * this only ran on the other path the page shipped a nav of dead anchors, a
+   * hero CTA pointing at "#start" (an id nothing emitted) and six inert "#"
+   * links in the footer.
+   */
+  const resolveInternalLinks = () => {
+    const derived = navLinksForSections(sections.map((section) => section.type));
+    const navSection = sections.find((section) => section.type === 'nav');
+    if (navSection) {
+      navSection.content.links = derived;
+      notes.push(derived.length
+        ? `nav links follow the section plan: ${derived.map((l) => l.href).join(' ')}`
+        : 'nav has no links: no section on this page carries an anchor');
+    }
+    const footerSection = sections.find((section) => section.type === 'footer');
+    if (footerSection && Array.isArray(footerSection.content.columns)) {
+      footerSection.content.columns = footerSection.content.columns
+        .map((column, index) => (index === 0 ? { ...column, links: derived } : column))
+        .filter((column) => (column.links ?? []).length);
+    }
+    // A secondary "see how it works" action lands on whichever explanatory
+    // section survived: the showcase owns "#how", the three moves "#how-it-works".
+    const explanatory = derived.find((link) => link.href === '#how' || link.href === '#how-it-works');
+    for (const section of sections) {
+      const secondary = section.content?.secondaryCta;
+      if (!secondary) continue;
+      if (explanatory) secondary.href = explanatory.href;
+      else delete section.content.secondaryCta;
+    }
+  };
 
   // The art direction owns the copy voice and the brand: replace the generic
   // template copy with domain-specific lines (see design/copy.mjs).
@@ -149,9 +186,11 @@ export function composePage({ request = '', taskType = 'create-page', projectKin
         default: break;
       }
     }
+    resolveInternalLinks();
     return { kind: projectKind, sections, notes, requestedSections: wanted, copy, title: copy.title, brand: copy.brand };
   }
 
+  resolveInternalLinks();
   return { kind: projectKind, sections, notes, requestedSections: wanted };
 }
 
@@ -517,12 +556,71 @@ function showcaseBulletsFor(domain) {
   return presets[domain] ?? ['Responsive down to 390px', 'Reduced-motion respected', 'Contrast checked against WCAG AA'];
 }
 
+/**
+ * The steps a "how it works" section shows.
+ *
+ * A brief that asks for "the mechanism explained in three moves" wants the
+ * mechanism, not a product-development process. With only a `software` preset
+ * here, a hand-built film scanner shipped "Describe the outcome / Do the
+ * smallest useful version / Refine against evidence" — copy that would suit any
+ * product in any industry, which is the definition of filler.
+ */
 function processStepsFor(domain) {
   const presets = {
     software: [
       { title: 'Connect', body: 'Point it at your existing tools. No migration weekend required.' },
       { title: 'Configure', body: 'Set the handful of things that matter and leave the rest alone.' },
       { title: 'Ship', body: 'Work moves, and the dashboard tells you what changed while you were away.' },
+    ],
+    'developer tool': [
+      { title: 'Install', body: 'One command. It reads the project you already have instead of asking you to restructure it.' },
+      { title: 'Run', body: 'It works against your real code, not a sample repository, and shows what it changed.' },
+      { title: 'Review', body: 'Every change arrives as a diff you approve, with the reasoning attached.' },
+    ],
+    hardware: [
+      { title: 'Machined', body: 'The chassis is cut from one billet, so nothing can shift out of alignment later.' },
+      { title: 'Assembled', body: 'Built by one person at one bench, who signs the unit before it leaves.' },
+      { title: 'Measured', body: 'Every unit is put on the test rig and ships with its own recorded figures.' },
+    ],
+    ai: [
+      { title: 'Reads', body: 'It indexes the material you point it at and keeps the references.' },
+      { title: 'Proposes', body: 'You get a plan you can argue with before anything is changed.' },
+      { title: 'Shows its working', body: 'Every answer carries the source it came from, so it can be checked.' },
+    ],
+    'food & drink': [
+      { title: 'Sourced', body: 'One grower, one harvest, named on the bag with the date it was picked.' },
+      { title: 'Roasted', body: 'In small batches, to a profile written for that lot rather than a house curve.' },
+      { title: 'Shipped', body: 'Within two days of roasting, because the difference is obvious in the cup.' },
+    ],
+    'speciality coffee': [
+      { title: 'Sourced', body: 'One grower, one harvest, named on the bag with the date it was picked.' },
+      { title: 'Roasted', body: 'In small batches, to a profile written for that lot rather than a house curve.' },
+      { title: 'Shipped', body: 'Within two days of roasting, because the difference is obvious in the cup.' },
+    ],
+    'health & fitness': [
+      { title: 'Assessed', body: 'A baseline you can see, taken before anything is prescribed.' },
+      { title: 'Programmed', body: 'A plan built around the time you actually have, not an ideal week.' },
+      { title: 'Adjusted', body: 'Reviewed against what you recorded, and changed when the numbers say so.' },
+    ],
+    education: [
+      { title: 'Placed', body: 'A short diagnostic puts you at the right level instead of at lesson one.' },
+      { title: 'Taught', body: 'Small groups with one instructor who sees your work every week.' },
+      { title: 'Assessed', body: 'Marked against the standard you are working toward, with the gap named.' },
+    ],
+    'creative portfolio': [
+      { title: 'Brief', body: 'One conversation to agree what the work has to do before anything is designed.' },
+      { title: 'Direction', body: 'Two routes, each argued for, and one chosen together.' },
+      { title: 'Delivery', body: 'Files, sources and the reasoning, so the work can be carried on without me.' },
+    ],
+    hospitality: [
+      { title: 'Arrive', body: 'Check in at the bar rather than a desk. Your room is already open.' },
+      { title: 'Stay', body: 'Fourteen rooms, so the kitchen knows how you take your coffee by the second morning.' },
+      { title: 'Return', body: 'The same room, held for you, if you want it.' },
+    ],
+    travel: [
+      { title: 'Planned', body: 'A route built around what you want to see, with the timings that make it possible.' },
+      { title: 'Booked', body: 'Everything held under one reference, with one person to call.' },
+      { title: 'Supported', body: 'Someone in the timezone you are in, for the whole trip.' },
     ],
   };
   return presets[domain] ?? [

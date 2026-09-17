@@ -2,92 +2,177 @@
 name: scroll-choreography
 category: animation
 priority: high
-frameworks: []
-libraries: []
-triggers: [scroll, scroll driven, scrolltrigger, sticky, pin, scrub, reveal, parallax, smooth scroll, lenis, stagger]
-description: Scroll as directed motion - native scroll-driven CSS, load orchestration, scrub budgets, reduced-motion.
+frameworks: [vanilla, react]
+libraries: [gsap, lenis]
+triggers: [scroll, scroll driven, scrolltrigger, sticky, pin, scrub, reveal, parallax, smooth scroll, lenis, stagger, scroll animation, pinned section, horizontal scroll, image sequence, scroll timeline]
+description: Scroll as directed motion — the three primitives (pin, scrub, parallax), native CSS scroll timelines, the correct Lenis+GSAP wiring, pinned sequences and image sequences, with reduced-motion paths.
 ---
 
-# Scroll Choreography
+# Scroll choreography
 
-Native first. Most scroll work now needs zero JS.
+Three primitives are behind almost every scroll effect worth copying: **pin** (hold an element while
+the page keeps scrolling), **scrub** (tie an animation's progress to the scrollbar), **parallax**
+(move layers at different rates). Everything else is a combination of those.
 
-## Native Scroll-Driven Reveal
+**Pick the cheapest tier that delivers the effect.** In order:
+
+| Tier | Use it for | Cost |
+|---|---|---|
+| CSS scroll-driven animations | reveals, progress bars, parallax, sticky headers | free, off the main thread |
+| IntersectionObserver + CSS | one-shot reveals, lazy work | very cheap |
+| GSAP ScrollTrigger | pinned sequences, scrubbed timelines, horizontal galleries | a real dependency |
+| rAF + normalised progress | a WebGL camera journey (see webgl-scroll-journey) | you own the loop |
+
+## Tier 1 — native CSS, no JavaScript
+
+Supported in Chrome/Edge 115+ and Safari 26+; Firefox still ships it behind a flag in stable, so
+treat it as progressive enhancement behind `@supports`. It runs on the compositor, which is why it
+stays smooth where a scroll listener does not.
 
 ```css
-@keyframes rise{from{opacity:0;transform:translateY(24px)}to{opacity:1;transform:none}}
-
+/* reveal each section as it enters the viewport */
 @supports (animation-timeline: view()) {
-  .reveal{animation:rise .7s linear both;animation-timeline:view();animation-range:entry 8% cover 34%}
+  .reveal {
+    animation: rise linear both;
+    animation-timeline: view();
+    animation-range: entry 10% cover 35%;   /* start as it enters, finish before centre */
+  }
 }
-```
-- `view()` = the element's progress through the viewport; `scroll(root block)` = the scroller's, for progress bars.
-- `animation-range` is the control surface: `entry 0% entry 100%` fires on entry, `cover 0% cover 50%` scrubs the first half. Keep reveals inside `entry 5%` → `cover 40%`.
-- `animation-duration` is ignored on a scroll timeline but still required to parse.
+@keyframes rise { from { opacity: 0; transform: translateY(2rem); } to { opacity: 1; transform: none; } }
 
-## Fallback
+/* a reading-progress bar driven by the document scroller */
+.progress { transform-origin: 0 50%; animation: grow linear both; animation-timeline: scroll(root block); }
+@keyframes grow { from { transform: scaleX(0); } to { transform: scaleX(1); } }
 
-```css
-@supports not (animation-timeline: view()) {
-  html[data-js] .reveal{opacity:0;transform:translateY(24px);transition:opacity .6s,transform .6s cubic-bezier(.22,1,.36,1)}
-  html[data-js] .reveal.is-in{opacity:1;transform:none}
-}
+/* named timeline: one element's scroll drives another element's animation */
+.gallery { scroll-timeline: --shelf inline; overflow-x: auto; }
+.gallery__meter { animation: grow linear both; animation-timeline: --shelf; }
 ```
+
+`animation-range` is the control that matters: `entry`, `cover`, `exit`, `contain`, with percentages.
+Tune the range, not the duration — there is no duration on a scroll timeline.
+
+## Tier 2 — reveal without a library
+
 ```js
-document.documentElement.dataset.js = '1';
-if (!CSS.supports('animation-timeline','view()')) {
-  const io = new IntersectionObserver((es)=>es.forEach(e=>{
-    if(e.isIntersecting){e.target.classList.add('is-in');io.unobserve(e.target)}
-  }),{rootMargin:'0px 0px -12% 0px',threshold:.15});
-  document.querySelectorAll('.reveal').forEach(el=>io.observe(el));
+const io = new IntersectionObserver((entries) => {
+  for (const e of entries) if (e.isIntersecting) { e.target.classList.add('is-in'); io.unobserve(e.target); }
+}, { threshold: 0.15, rootMargin: '0px 0px -10% 0px' });
+document.querySelectorAll('[data-reveal]').forEach((el) => io.observe(el));
+```
+
+Hide only under `html[data-js]`, which the script sets itself, so a JS failure can never leave the
+page blank.
+
+## Tier 3 — GSAP ScrollTrigger
+
+```js
+gsap.registerPlugin(ScrollTrigger);
+
+// scrub: progress follows the scrollbar. `true` locks to it; a number adds smoothing lag.
+gsap.to('.panel__image', {
+  yPercent: -18, ease: 'none',
+  scrollTrigger: { trigger: '.panel', start: 'top bottom', end: 'bottom top', scrub: 1 },
+});
+
+// pin + timeline: the classic cinematic beat. The section holds while its contents play.
+const tl = gsap.timeline({
+  scrollTrigger: { trigger: '.scene', start: 'top top', end: '+=3000', pin: true, scrub: 1, anticipatePin: 1 },
+});
+tl.from('.scene__line', { yPercent: 110, stagger: 0.12, ease: 'none' })
+  .to('.scene__caption', { opacity: 1 }, '<0.2')
+  .to('.scene__caption', { opacity: 0 }, '>0.6');
+
+// horizontal gallery: pin the wrapper, translate the track by its own overflow
+const track = document.querySelector('.track');
+gsap.to(track, {
+  x: () => -(track.scrollWidth - innerWidth), ease: 'none',
+  scrollTrigger: { trigger: '.track-wrap', pin: true, scrub: 1, end: () => '+=' + (track.scrollWidth - innerWidth), invalidateOnRefresh: true },
+});
+```
+
+- `ease: 'none'` on anything scrubbed. An eased scrub feels like lag, not weight.
+- `invalidateOnRefresh: true` whenever a value depends on layout, or resize breaks it.
+- `ScrollTrigger.refresh()` after fonts and images settle, or every trigger is measured wrong.
+
+## Smooth scroll — the wiring that is usually wrong
+
+Lenis and ScrollTrigger must run on **one** loop. Two loops is where the jitter comes from.
+
+```js
+import Lenis from 'lenis';
+const lenis = new Lenis({ duration: 1.05, smoothWheel: true });
+lenis.on('scroll', ScrollTrigger.update);                 // 1. tell ScrollTrigger when Lenis moves
+gsap.ticker.add((time) => lenis.raf(time * 1000));        // 2. drive Lenis from GSAP's ticker (seconds → ms)
+gsap.ticker.lagSmoothing(0);                              // 3. or GSAP will "helpfully" skip time
+```
+
+Do not also call `requestAnimationFrame(raf)` for Lenis — that is the second loop. Turn smooth
+scroll off for `prefers-reduced-motion` and for coarse pointers, where the OS already owns momentum.
+
+## Pinned image sequence (the "Apple" effect)
+
+Frames drawn to a canvas, frame index mapped from scroll progress.
+
+```js
+const frames = 120, images = [];
+for (let i = 0; i < frames; i++) { const im = new Image(); im.src = `/seq/${String(i).padStart(4, '0')}.webp`; images.push(im); }
+const ctx = canvas.getContext('2d');
+const state = { frame: 0 };
+gsap.to(state, {
+  frame: frames - 1, snap: 'frame', ease: 'none',
+  scrollTrigger: { trigger: '.seq', start: 'top top', end: '+=4000', pin: true, scrub: 0.5 },
+  onUpdate: () => { const im = images[state.frame]; if (im?.complete) ctx.drawImage(im, 0, 0, canvas.width, canvas.height); },
+});
+```
+
+Budget it honestly: 120 frames of WebP at ~40 KB is ~5 MB. Preload the first ~20, lazy the rest, and
+give reduced-motion a single hero frame.
+
+## Choreography, not effects
+
+A page with eight scroll tricks reads worse than one with a single well-timed sequence. The page load
+is one composed ladder, not per-element animation:
+
+```
+0–200 ms     structure and substrate settle
+200–600 ms   the hero line (per-line mask reveal, 60–90 ms stagger)
+400–800 ms   the supporting line
+600–900 ms   navigation
+800–1200 ms  everything below the fold hands over to scroll
+```
+
+Use one custom easing family and never the defaults. `cubic-bezier(0.16, 1, 0.3, 1)` is the
+exponential-out that most premium work uses; `ease`, `linear` and `ease-in-out` read as unfinished.
+
+## Rules
+
+- Transform and opacity only. Never animate `width`, `height`, `top`, `left` — they relayout.
+- Anything scrubbed is `ease: 'none'`.
+- `will-change` on the few elements that actually animate, removed when finished.
+- Never parallax body text. Decorative layers only.
+- Content is never hidden waiting for a trigger unless `html[data-js]` is set.
+- Kill every ScrollTrigger on teardown (`ScrollTrigger.getAll().forEach(t => t.kill())`).
+
+## Reduced motion
+
+```js
+const reduced = matchMedia('(prefers-reduced-motion: reduce)');
+if (reduced.matches) {
+  document.querySelectorAll('[data-reveal]').forEach((el) => el.classList.add('is-in'));
+} else {
+  // build the timelines here
 }
 ```
-**Fail-safe rule**: the hidden state sits behind `html[data-js]`, set by JS itself. JS fails, nothing is hidden — content must never need JS to be visible.
 
-## Page-Load Orchestration
+Not "animations off" — the same page, composed, arriving at once. Every pinned section must still be
+readable when nothing pins.
 
-One timeline beats scattered micro-interactions: eyebrow, headline, lede, CTA each one rung up a 60-90ms ladder, one keyframe, one easing.
+## Checklist
 
-```css
-.hero > *{animation:rise .6s cubic-bezier(.22,1,.36,1) both}
-.hero > :nth-child(1){animation-delay:.04s}
-.hero > :nth-child(2){animation-delay:.12s}
-.hero > :nth-child(3){animation-delay:.20s}
-.hero > :nth-child(4){animation-delay:.28s}
-```
-Entrance under 700ms. Over ~5 rungs feels like a loading screen.
-
-## Sticky vs Pin
-
-`position:sticky; top:0` in a tall parent is free, GPU-cheap and keyboard-safe — sticky copy beside scrolling media, section headers, progress rails. True pinning (ScrollTrigger `pin:true`) rewrites layout and can trap focus: one sequence per page, 3-5 beats, explicit `end:"+=200%"`.
-
-## Smooth Scroll
-
-`scroll-behavior:smooth` on `html` handles anchors — ship that. Lenis (~15KB) earns its weight only when a scrub needs interpolated velocity (pinned horizontal gallery, video scrub); it hijacks native scroll. Never for "feel".
-
-## Budgets
-
-- **Max 2 scrubbed effects per page.** Reveals are not scrubbed and do not count.
-- **Transform and opacity only** on scroll — no `top`, `width`, `height`, `filter`, `box-shadow`.
-- Parallax offsets ±16-40px; more reads as broken, not deep.
-- One scroll-linked canvas or video, paused off-screen.
-
-## Reduced Motion
-
-```css
-@media (prefers-reduced-motion:reduce){
-  .reveal,.hero > *{animation:none!important;opacity:1!important;transform:none!important}
-  html{scroll-behavior:auto}
-}
-```
-Everything visible, nothing moving. No fade-only compromise that still hides content.
-
-## DECIDE
-
-- Can this be `view()` with no JS? Then no library.
-- Scrubbed effects on the page — over 2? Cut one.
-- Does the page render fully with JS disabled?
-
-## NEVER
-
-Elements permanently `opacity:0` in CSS waiting for an observer. Scroll handlers with no rAF coalescing. Animating layout properties on scroll. Lenis plus a pin plus parallax plus a scrub bar on one page.
+- Is this the cheapest tier that delivers the effect?
+- Scrubbed things `ease: 'none'`; `invalidateOnRefresh` where layout matters?
+- One rAF loop only (Lenis on `gsap.ticker`, `lagSmoothing(0)`)?
+- One easing family, one custom curve, no defaults?
+- Does the page read with JS off, and does reduced-motion get the composed page?
+- `ScrollTrigger.refresh()` after fonts/images load?
