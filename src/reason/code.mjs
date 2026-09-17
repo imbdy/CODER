@@ -8,7 +8,7 @@ const STRING_FIELDS = ['headline', 'subhead', 'heading', 'lead', 'eyebrow', 'lab
 const LIST_FIELDS = ['items', 'bullets'];
 
 export async function reasonCode(payload = {}) {
-  const { direction, plan, tokens, inspection, skills, router } = payload;
+  const { direction, plan, tokens, inspection, skills, router, artDirection, decoration } = payload;
   const sections = (plan.sections ?? []).map((section) => ({ ...section, content: { ...section.content } }));
   const notes = [];
 
@@ -20,15 +20,15 @@ export async function reasonCode(payload = {}) {
   }
 
   const finalPlan = { ...plan, sections };
-  const css = emitSiteCss(tokens, { direction, plan: finalPlan, request: payload.request ?? '' });
+  const css = emitSiteCss(tokens, { direction, plan: finalPlan, request: payload.request ?? '', artDirection, decoration });
   // Premium frontend: emit separate CSS + JS files for real build folder structure
   // The agent is now truly good at frontend — it builds a real folder with assets, not just inline soup
   const { html: htmlInline } = (() => {
-    const h = emitPage({ tokens, direction, plan: finalPlan, css, title: payload.title ?? 'Artisan site', request: payload.request ?? '' });
+    const h = emitPage({ tokens, direction, plan: finalPlan, css, title: payload.title ?? 'Artisan site', request: payload.request ?? '', artDirection, decoration });
     return { html: h };
   })();
   // Generate external assets
-  const js = emitSiteJs({ request: payload.request ?? '', direction });
+  const js = emitSiteJs({ request: payload.request ?? '', direction, artDirection, decoration });
   // Build external HTML that references separate files (keeps inline as fallback for verification, but primary is external)
   const externalCssPath = 'styles/main.css';
   const externalJsPath = 'scripts/main.js';

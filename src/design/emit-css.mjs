@@ -9,6 +9,8 @@
 
 import { tokensToCssVariables } from './css-vars.mjs';
 
+import { emitArtDirectionCss } from './art-direction.mjs';
+
 export function emitBaseCss(tokens, { direction } = {}) {
   return `/* =============================================================
    ${direction?.name ?? 'Artisan'} — base layer
@@ -599,6 +601,44 @@ export function emitCommerceCss() {
 .tier__cadence { font-size: var(--text-sm); color: var(--color-text-faint); }
 .tier__features { display: flex; flex-direction: column; gap: var(--space-3); font-size: var(--text-sm); color: var(--color-text-muted); list-style: none; padding: 0; }
 
+/* ------------------------------------------------------- specification ---- */
+/* A specification reads down the page: hairline rules, a label column that stays
+   quiet, and figures in tabular mono so the digits line up column-wise. It
+   collapses to stacked label/value pairs on a phone rather than scrolling. */
+
+.spec-wrap { overflow-x: auto; }
+.spec { width: 100%; border-collapse: collapse; text-align: left; }
+.spec caption {
+  caption-side: top;
+  text-align: left;
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  letter-spacing: var(--tracking-caps);
+  text-transform: uppercase;
+  color: var(--color-text-faint);
+  padding-bottom: var(--space-4);
+}
+.spec th, .spec td { padding: var(--space-4) var(--space-4) var(--space-4) 0; border-top: 1px solid var(--color-border); vertical-align: baseline; }
+.spec tr:last-child th, .spec tr:last-child td { border-bottom: 1px solid var(--color-border); }
+.spec th {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  font-weight: 400;
+  letter-spacing: var(--tracking-caps);
+  text-transform: uppercase;
+  color: var(--color-text-muted);
+  width: 38%;
+  white-space: nowrap;
+}
+.spec td { font-family: var(--font-mono); font-size: var(--text-base); font-variant-numeric: tabular-nums; color: var(--color-text); }
+
+@media (max-width: 34rem) {
+  .spec th, .spec td { display: block; width: auto; white-space: normal; }
+  .spec th { border-top: 1px solid var(--color-border); padding-bottom: var(--space-1); }
+  .spec td { border-top: 0; padding-top: 0; }
+  .spec tr:last-child th { border-bottom: 0; }
+}
+
 /* -------------------------------------------------------- testimonials ---- */
 
 .quotes { display: grid; gap: var(--space-8); grid-template-columns: repeat(auto-fit, minmax(min(100%, 22rem), 1fr)); }
@@ -882,9 +922,11 @@ export function emitPremium3DScrollCss() {
 }
 
 /** Compose the complete stylesheet for a page plan. */
-export function emitSiteCss(tokens, { direction, plan, request = '' } = {}) {
+export function emitSiteCss(tokens, { direction, plan, request = '', artDirection, decoration } = {}) {
   const types = new Set((plan?.sections ?? []).map((section) => section.type));
-  const needs3DScroll = isPremiumRequest(request, direction);
+  // With an art direction the hero owns its own composition layer and the
+  // decoration budget replaces the old orb/parallax scaffolding.
+  const needs3DScroll = !artDirection && isPremiumRequest(request, direction);
   const parts = [emitBaseCss(tokens, { direction }), emitControlsCss()];
   if (types.has('demo')) parts.push(emitDemoCss());
   if (types.has('nav') || types.has('hero')) parts.push(emitNavHeroCss());
@@ -893,6 +935,7 @@ export function emitSiteCss(tokens, { direction, plan, request = '' } = {}) {
   if (types.has('form')) parts.push(emitAuthCss());
   if (needs3DScroll) parts.push(emitPremium3DScrollCss());
   parts.push(emitMotionCss());
+  if (artDirection) parts.push(emitArtDirectionCss(artDirection, decoration));
   return parts.join('\n');
 }
 

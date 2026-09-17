@@ -7,6 +7,7 @@ import { createSkillRegistry } from '../skills/registry.mjs';
 import { createRetriever } from '../skills/retriever.mjs';
 import { createRouter } from '../model/router.mjs';
 import { chooseDirection } from '../design/directions.mjs';
+import { chooseArtDirection, decorationFor, applyArtDirection, artDirectionBlock } from '../design/art-direction.mjs';
 import { buildTokens } from '../design/tokens.mjs';
 import { composePage, deriveSubject } from '../design/compose.mjs';
 import { buildDesignSpec, renderSpecBlock, specSkillPhases } from '../design/spec.mjs';
@@ -30,11 +31,13 @@ function normalizeAgreed(agreed) {
   const clean = (list, max = 10, len = 140) => [...(Array.isArray(list) ? list : (list ? [list] : []))].map((s) => String(s ?? '').trim()).filter(Boolean).map((s) => s.slice(0, len)).slice(0, max);
   // Accepts the executor's directive shape ({ avoid, emphasis, visual }) and the
   // raw agreed-context shape ({ rejected/rejectedIdeas, constraints, accepted… }).
-  const avoid = Array.isArray(a.avoid) ? clean(a.avoid) : [...new Set([...clean(a.rejected ?? a.rejectedIdeas), ...clean(a.constraints)])];
-  const emphasis = Array.isArray(a.emphasis) ? clean(a.emphasis) : [...new Set([...clean(a.typography, 6), ...clean(a.accepted ?? a.acceptedIdeas), ...clean(a.motion, 4), ...clean(a.depth3d, 4), ...clean(a.hero, 2)])];
+  // avoid = ruled out. Constraints are requirements, so they belong in emphasis.
+  const avoid = Array.isArray(a.avoid) ? clean(a.avoid) : clean(a.rejected ?? a.rejectedIdeas);
+  const emphasis = Array.isArray(a.emphasis) ? clean(a.emphasis, 14) : [...new Set([...clean(a.typography, 6), ...clean(a.accepted ?? a.acceptedIdeas), ...clean(a.constraints), ...clean(a.motion, 4), ...clean(a.depth3d, 4), ...clean(a.hero, 2)])];
   return {
     product: String(a.product ?? a.project ?? '').slice(0, 80),
     purpose: String(a.purpose ?? a.summary ?? '').slice(0, 200),
+    artDirection: a.artDirection ?? a.build?.artDirection,
     visual: [...(a.visual ?? a.visualDirection ?? [])].map((s) => String(s)).slice(0, 8),
     avoid,
     emphasis,
@@ -59,7 +62,7 @@ function avoidAccentClash(direction, avoid = []) {
   const replacement = direction.theme === 'dark' ? '#e2a33b' : '#b4532a';
   return { ...direction, accent: replacement, accentNote: `accent changed from ${hex} to ${replacement}: rejected hue` };
 }
-export async function runTask(request, { workspaceDir, config, overrides = {}, bus: externalBus, agreed = undefined } = {}) {
+export async function runTask(request, { workspaceDir, config, overrides = {}, bus: externalBus, agreed = undefined, mode = undefined } = {}) {
   const bus = externalBus ?? new EventBus();
   const logger = config?.logger ?? silentLogger;
   const run = { id: makeId('run'), request, status: 'running', startedAt: new Date().toISOString(), decisions: [], writes: [] };
@@ -91,6 +94,13 @@ export async function runTask(request, { workspaceDir, config, overrides = {}, b
         constraints: [...new Set([...(understanding.constraints ?? []), ...agreedCtx.avoid.map((a) => `avoid:${a}`)])],
       };
     }
+    // The caller knows whether this is a refinement. Re-classifying the composed
+    // brief text is unreliable — its agreed-context block quotes the original
+    // "Build the launch site…", which read as a fresh create and rebuilt the page.
+    if (mode === 'refine' && understanding.taskType !== 'enhance') {
+      run.decisions.push({ kind: 'mode', choice: 'enhance', why: `caller passed mode=refine (classifier said ${understanding.taskType})` });
+      understanding = { ...understanding, taskType: 'enhance', mode: 'refine' };
+    }
     run.understanding = understanding;
     // State machine enforces workflow (prevents skipping PLANNING, VISUAL_QA, etc.)
     stateMachine = new AgentStateMachine({ request, understanding, inspection });
@@ -120,10 +130,33 @@ export async function runTask(request, { workspaceDir, config, overrides = {}, b
     run.direction = { name: direction.name, id: direction.id, method, accent: direction.accent, accentNote: direction.accentNote };
     run.decisions.push({ kind: 'direction', choice: direction.id, why: method });
     if (direction.accentNote) run.decisions.push({ kind: 'accent', choice: direction.accent, why: direction.accentNote });
+    // ---- ART DIRECTION: one specific identity (substrate, type, composition,
+    // decoration budget, signature move). This is what stops every build from
+    // collapsing into the same centred hero with three orbs.
+    const chosenArt = chooseArtDirection({ request, agreed: agreedCtx, inspection, taskType: understanding.taskType, lockedId: agreedCtx.artDirection });
+    const artDirection = chosenArt.direction;
+    const decoration = decorationFor(artDirection, { request, agreed: agreedCtx });
+    run.artDirection = {
+      id: artDirection.id, name: artDirection.name, sentence: artDirection.sentence, composition: artDirection.composition,
+      voice: artDirection.voice, signature: artDirection.signature, risk: artDirection.risk, accent: artDirection.accent,
+      theme: artDirection.theme, fonts: { display: artDirection.fonts.display.split(',')[0], text: artDirection.fonts.text.split(',')[0], mono: artDirection.fonts.mono.split(',')[0] },
+      decoration: { layers: decoration.layers, dropped: decoration.dropped, canvas: decoration.canvas, why: decoration.canvasReason },
+      reasons: chosenArt.reasons, alternatives: chosenArt.alternatives, block: artDirectionBlock(artDirection, decoration),
+    };
+    run.decisions.push({ kind: 'art-direction', choice: artDirection.id, why: chosenArt.reasons.join('; ') || 'best fit for the brief' });
+    run.decisions.push({ kind: 'decoration', choice: decoration.layers.join('+') || 'none', why: decoration.canvasReason });
+    bus.emit(EVENT.THOUGHT, { phase: 'art-direction', text: run.artDirection.block });
     // INTERNAL design spec (DESIGN → EXPERIENCE → MOTION → TECH → BUILD → QA).
     // Built BEFORE tokens/compose so every later step implements a decision.
     bus.emit(EVENT.PHASE, { phase: 'spec' });
     const spec = buildDesignSpec({ request, understanding, direction, inspection, agreed: agreedCtx });
+    // The decoration budget is the authority on depth: a brief that only mentions
+    // 3D to reject it must not leave the spec promising a WebGL layer.
+    if (!decoration.canvas && spec.tech.depth !== 'css') {
+      spec.tech.depth = 'css';
+      spec.tech.depthReason = decoration.canvasReason;
+      spec.design['3d_strategy'] = `css — ${decoration.canvasReason}`;
+    }
     run.spec = { design: spec.design, motion: spec.motion, tech: spec.tech, iterations: spec.plan.iterations, block: renderSpecBlock(spec) };
     // Now create structured TODOs from spec + plan with dependencies
     const enrichedPlan = { steps: plan.steps, ...plan };
@@ -161,13 +194,16 @@ export async function runTask(request, { workspaceDir, config, overrides = {}, b
       if (force.length) run.forcedSkills = force;
       bus.emit(EVENT.SKILLS, { ids: run.skills.ids });
     } catch { /* base retrieval stands */ }
-    const tokens = buildTokens({ direction, existing: inspection.design, intent: understanding.intent, request });
-    run.tokens = { accent: tokens.accent, theme: tokens.theme, direction: tokens.direction };
+    const baseTokens = buildTokens({ direction, existing: inspection.design, intent: understanding.intent, request });
+    const tokens = applyArtDirection(baseTokens, artDirection, { decoration });
+    run.tokens = { accent: tokens.accent, theme: tokens.theme, direction: tokens.direction, contrast: tokens.diagnostics };
+    if (!tokens.diagnostics.passAA) run.decisions.push({ kind: 'contrast', choice: 'raised muted text', why: `muted ${tokens.diagnostics.contrastMutedOnBg}:1, faint ${tokens.diagnostics.contrastFaintOnBg}:1` });
     const subject = deriveSubject(request);
-    const brandFromRequest = request.match(/called\s+([A-Za-z][A-Za-z0-9&' -]{1,30}?)(?=[,.;]|$)/i);
-    if (brandFromRequest) subject.subject = brandFromRequest[1].trim();
-    const page = composePage({ request, taskType: understanding.taskType, projectKind: inspection.projectKind, direction, subject, wants: [] });
-    run.page = { sections: page.sections.map((s) => s.type + ':' + s.layout) };
+    const namedBrand = request.match(/called\s+([A-Za-z][A-Za-z0-9&' -]{1,30}?)(?=[,.;]|$)/i);
+    if (namedBrand) { subject.subject = namedBrand[1].trim(); subject.matchedOn = 'quoted'; }
+    const lockedSections = mode === 'refine' ? (agreed?.build?.sections ?? []) : [];
+    const page = composePage({ request, taskType: understanding.taskType, projectKind: inspection.projectKind, direction, subject, wants: [], artDirection, lockedSections });
+    run.page = { sections: page.sections.map((s) => s.type + ':' + s.layout), brand: page.brand, copyVoice: page.copy?.voice, coinedBrand: page.copy?.coined };
     const tools = createToolContext({ workspaceDir, config, bus, dryRun: !!overrides.dryRun });
 
     // ---- IMPLEMENTATION PHASE (enforced) ----
@@ -185,20 +221,20 @@ export async function runTask(request, { workspaceDir, config, overrides = {}, b
     let code;
     if (isTrivialTextEdit) {
       const existingRel = tools.listFiles().find((rel) => /^index\.html?$/i.test(rel));
-      if (existingRel) code = await enhanceExistingFile({ existingRel, taskType: 'enhance', tokens, direction, tools, request });
+      if (existingRel) code = await enhanceExistingFile({ existingRel, taskType: 'enhance', tokens, direction, tools, request, decoration, avoid: agreedCtx.avoid });
     }
     if (!code && ENHANCE_TYPES.includes(understanding.taskType)) {
       const existingRel = tools.listFiles().find((rel) => /^index\.html?$/i.test(rel));
       if (existingRel) {
         // pass raw request so enhancement can apply targeted tweaks (color, sizing)
-        code = await enhanceExistingFile({ existingRel, taskType: understanding.taskType, tokens, direction, tools, request });
+        code = await enhanceExistingFile({ existingRel, taskType: understanding.taskType, tokens, direction, tools, request, decoration, avoid: agreedCtx.avoid });
       }
     }
     if (!code) {
       const title = page.kind === 'component-demo'
         ? `${page.component.charAt(0).toUpperCase() + page.component.slice(1)} — demo`
-        : (page.title ?? 'Artisan site');
-      code = await reasonCode({ direction, plan: page, tokens, inspection, title, skills: { ids: skills.ids, contextBlock: skills.contextBlock }, router });
+        : (page.title ?? `${page.brand ?? 'Artisan'} — ${page.sections.find((s) => s.type === 'hero')?.content?.headline ?? 'a considered interface'}`);
+      code = await reasonCode({ direction, plan: page, tokens, inspection, title, skills: { ids: skills.ids, contextBlock: skills.contextBlock }, router, request, artDirection, decoration });
     }
     run.codeNotes = code.notes;
     for (const file of code.files) {
@@ -268,13 +304,39 @@ export async function runTask(request, { workspaceDir, config, overrides = {}, b
     // engine cannot fix design-level findings, but it must not hide them.
     if (!overrides.dryRun && config?.verification?.runVisual !== false) {
       try {
-        const { runVisualQa } = await import('../verify/visual-qa.mjs');
-        const rendered = await runVisualQa({ workspaceDir, entry: 'index.html', config, spec, agreed: agreed ?? undefined, router: undefined, bus, round: 1, html, css, outDir: path.join(workspaceDir, '.forge', 'qa', `deterministic-${run.id}`) });
+        const { runVisualQa, deterministicRepairCss } = await import('../verify/visual-qa.mjs');
+        const qaDir = path.join(workspaceDir, '.forge', 'qa', `run-${run.id}`);
+        const agreedForQa = agreed ?? agreedCtx;
+        let round = 1;
+        const { requirementsFromBrief } = await import('../verify/requirements.mjs');
+        const briefRequirements = requirementsFromBrief(request);
+        if (briefRequirements.length) run.decisions.push({ kind: 'requirements', choice: briefRequirements.map((r) => r.id).join('+'), why: 'stated in the brief, checked against the render' });
+        let rendered = await runVisualQa({ workspaceDir, entry: 'index.html', config, spec, agreed: agreedForQa, router: undefined, bus, round, html, css, outDir: path.join(qaDir, 'round-1'), requirements: briefRequirements });
+        const rounds = [{ round, score: rendered.score, verdict: rendered.verdict, findings: rendered.findings.length, rendered: rendered.rendered }];
+        // CODE -> RENDER -> SEE -> FIX -> RENDER AGAIN. The engine cannot re-think a
+        // design, but every MEASURED defect has one mechanical fix; apply it and re-render.
+        if (rendered.rendered && rendered.verdict === 'iterate') {
+          const chosen = deterministicRepairCss(rendered.rawRender ?? { ok: false }, {});
+          if (chosen.fixes.length) {
+            const cssRel = (run.writes ?? []).map((w) => w.rel).find((rel) => rel.endsWith('.css')) ?? 'styles/main.css';
+            const currentCss = tools.readFile(cssRel);
+            run.writes.push(tools.writeFile(cssRel, `${currentCss}${chosen.css}`));
+            const htmlRel = (run.writes ?? []).map((w) => w.rel).find((rel) => rel.endsWith('.html')) ?? 'index.html';
+            const currentHtml = tools.readFile(htmlRel);
+            if (currentHtml.includes('</style>')) run.writes.push(tools.writeFile(htmlRel, currentHtml.replace('</style>', `${chosen.css}\n</style>`)));
+            run.repairs = chosen.fixes;
+            bus.emit(EVENT.IMPROVE, { iteration: 1, issues: chosen.fixes.length, kind: 'qa-repair' });
+            try { if (stateMachine.getState() === STATES.VISUAL_QA) stateMachine.transition(STATES.ITERATION, { reason: `${chosen.fixes.length} measured defects repaired` }); } catch {}
+            round = 2;
+            rendered = await runVisualQa({ workspaceDir, entry: 'index.html', config, spec, agreed: agreedForQa, router: undefined, bus, round, html: tools.readFile(htmlRel), css: tools.readFile(cssRel), outDir: path.join(qaDir, 'round-2'), requirements: briefRequirements });
+            rounds.push({ round, score: rendered.score, verdict: rendered.verdict, findings: rendered.findings.length, rendered: rendered.rendered });
+          }
+        }
         run.visualQa = {
           ...run.visualQa,
           rendered: rendered.rendered, method: rendered.method, browser: rendered.browser, reason: rendered.reason,
           score: rendered.rendered ? rendered.score : run.visualQa.score, verdict: rendered.verdict,
-          findings: rendered.findings, screenshots: rendered.screenshots, rounds: 1,
+          findings: rendered.findings, screenshots: rendered.screenshots, rounds: rounds.length, history: rounds,
           ok: rendered.rendered ? !rendered.findings.some((f) => f.severity === 'blocker') : qa.ok,
         };
       } catch (error) {
@@ -352,7 +414,7 @@ export async function runTask(request, { workspaceDir, config, overrides = {}, b
  * Inject a targeted layer into an existing page without touching its markup.
  * Returns the same shape as reasonCode: { files, notes }.
  */
-async function enhanceExistingFile({ existingRel, taskType, tokens, direction, tools, request = '' }) {
+async function enhanceExistingFile({ existingRel, taskType, tokens, direction, tools, request = '', decoration, avoid = [] }) {
   const source = tools.readFile(existingRel);
   const notes = [];
   const injections = [];
@@ -414,9 +476,19 @@ async function enhanceExistingFile({ existingRel, taskType, tokens, direction, t
   }
 
   // Premium 3D + scroll handling — detect intent from primary request
-  const wants3D = /\b(3d|three\.?js|webgl|depth|immersive)\b/i.test(primary) || taskType === '3d';
-  const wantsScroll = /\b(scroll|pin|scrub|parallax|horizontal|gsap|cinematic|storytelling|glassmorphism)\b/i.test(primary) || taskType === 'motion' || taskType === 'enhance';
-  const wantsPremium = wants3D || wantsScroll || /\b(premium|cinematic|high.?end)\b/i.test(primary);
+  // Rejections outrank keyword detection. A refinement brief quotes the whole
+  // agreed context, so "no spinning 3D product shots" used to *trigger* the 3D
+  // layer and re-introduce the orbs and WebGL canvas the user ruled out.
+  const avoidText = [...(avoid ?? [])].join(' ').toLowerCase();
+  const allowCanvas = decoration ? Boolean(decoration.canvas) : !/\b(3d|webgl|canvas|three)\b/.test(avoidText);
+  const allowOrbs = !/\b(orb|blob|glow|gradient|floating)\b/.test(avoidText);
+  const allowGlass = !/\b(glass|glassmorph|blur)\b/.test(avoidText);
+  const wants3D = allowCanvas && (/\b(3d|three\.?js|webgl|depth|immersive)\b/i.test(primary) || taskType === '3d');
+  const wantsScroll = /\b(scroll|pin|scrub|parallax|horizontal|gsap|cinematic|storytelling)\b/i.test(primary) || taskType === 'motion' || taskType === 'enhance';
+  const wantsPremium = (wants3D || wantsScroll || /\b(premium|cinematic|high.?end)\b/i.test(primary)) && (allowOrbs || allowCanvas);
+  if (!allowCanvas) notes.push('3D/WebGL layer skipped: rejected in the agreed context');
+  if (!allowOrbs) notes.push('decorative orbs skipped: rejected in the agreed context');
+  if (!allowGlass) notes.push('glass surfaces skipped: rejected in the agreed context');
 
   if (wants3D || taskType === '3d') {
     // Upgrade from simple perspective to real WebGL when premium, else keep lightweight
@@ -433,7 +505,7 @@ async function enhanceExistingFile({ existingRel, taskType, tokens, direction, t
 .scroll-pin { position: relative; }
 .scroll-pin__sticky { position: sticky; top: 0; height: 100vh; display: grid; place-items: center; overflow: hidden; }
 .parallax { will-change: transform; }
-.glass { background: color-mix(in oklab, var(--color-surface) 72%, transparent); backdrop-filter: blur(16px) saturate(1.2); border: 1px solid color-mix(in oklab, var(--color-border) 70%, transparent); }
+${allowGlass ? ".glass { background: color-mix(in oklab, var(--color-surface) 72%, transparent); backdrop-filter: blur(16px) saturate(1.2); border: 1px solid color-mix(in oklab, var(--color-border) 70%, transparent); }" : ""}
 @media (max-width: 60rem) { .hero-webgl { opacity: 0.6; } .scroll-pin__sticky { height: auto; position: relative; } }
 @media (prefers-reduced-motion: reduce) { .hero-webgl { display: none !important; } .parallax { transform: none !important; } }`);
       notes.push('premium 3D layer injected (WebGL canvas + orbs + scroll scaffolding)');

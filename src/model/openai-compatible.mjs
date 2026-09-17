@@ -22,6 +22,9 @@ export class OpenAICompatibleProvider extends ModelProvider {
     this.temperature = config.temperature ?? 0.35;
     this.timeoutMs = config.timeoutMs ?? 180000;
     this.extraHeaders = config.headers ?? {};
+    // Explicit TPM beats discovery; Groq's free tier is 8k and must be paced.
+    this.configuredTpm = Number(config.tokensPerMinute) || (/groq\.com/.test(this.baseUrl) ? 8000 : undefined);
+    this.lastRateLimit = undefined;
     // Vision: explicit config wins; otherwise infer from well-known multimodal model names.
     this.vision = typeof config.vision === 'boolean' ? config.vision : /gpt-4o|gpt-4\.1|gpt-5|\bo[34]\b|claude|gemini|pixtral|llava|vision|qwen[\d.]*-?vl|minicpm-v|gemma-?3|grok|nova|phi-4-multimodal|omni/i.test(this.model);
   }
@@ -102,6 +105,10 @@ export class OpenAICompatibleProvider extends ModelProvider {
       throw new ModelError(`openai-compatible responded ${response.status}: ${body.slice(0, 300)}`);
     }
 
+    // Token-per-minute accounting from the provider itself. Groq's free tier is
+    // 8k TPM, which a prompt that re-sends skill bodies every turn blows through
+    // in one call; the router uses this to pace instead of collecting 429s.
+    this.lastRateLimit = readRateLimit(response.headers);
     const data = await response.json();
     // Groq compound puts reasoning in `message.reasoning` and sometimes content is a guide, not JSON
     const msg = data?.choices?.[0]?.message ?? {};
@@ -123,8 +130,74 @@ export class OpenAICompatibleProvider extends ModelProvider {
     const promptTokens = data?.usage?.prompt_tokens ?? 0;
     const completionTokens = data?.usage?.completion_tokens ?? 0;
     this.recordSuccess({ promptTokens, completionTokens, ms: Date.now() - started });
-    return { text, provider: this.id, model: this.model, promptTokens, completionTokens, ms: Date.now() - started, raw: data, imagesSent };
+    return { text, provider: this.id, model: this.model, promptTokens, completionTokens, ms: Date.now() - started, raw: data, imagesSent, rateLimit: this.lastRateLimit };
   }
+
+  /** Tokens per minute this endpoint allows, once a response has told us. */
+  get tokensPerMinute() {
+    return this.configuredTpm ?? this.lastRateLimit?.limitTokens;
+  }
+
+  /**
+   * Pace against the provider's own token window instead of discovering the
+   * limit with a 429. Returns the milliseconds waited (0 when no wait was owed).
+   *
+   * Every branch here must fail OPEN: if we cannot tell how big the window is or
+   * how much is left, we call and let a real 429 tell us, because a wrong wait
+   * is charged to every single call.
+   */
+  async awaitBudget(estimatedTokens = 0) {
+    const limit = this.lastRateLimit;
+    // `remaining: 0` is the case that most needs waiting, so test for a number
+    // rather than for truthiness — but an UNKNOWN remaining must never wait.
+    if (!limit || !Number.isFinite(limit.remainingTokens)) return 0;
+    // Without a real window size there is no refill rate to compute, and
+    // assuming one invents a wait for a provider that never published a limit.
+    if (!Number.isFinite(limit.limitTokens) || limit.limitTokens <= 0) return 0;
+    const needed = Math.ceil(estimatedTokens * 1.35); // reasoning models spend more than they show
+    if (limit.remainingTokens >= needed) return 0;
+    // Wait only for the shortfall to refill, not for a whole window: a rolling
+    // bucket of `limitTokens` per minute refills at limit/60 tokens a second.
+    const perSecond = Math.max(1, limit.limitTokens / 60);
+    const shortfall = needed - limit.remainingTokens;
+    const waitMs = Math.min(45000, Math.max(750, Math.ceil((shortfall / perSecond) * 1000) + 400));
+    await new Promise((resolve) => setTimeout(resolve, waitMs));
+    this.lastRateLimit = { ...limit, remainingTokens: Math.min(limit.limitTokens, limit.remainingTokens + shortfall) };
+    return waitMs;
+  }
+}
+
+/** Parse the standard `x-ratelimit-*` headers, tolerating "1m2.5s" durations. */
+function readRateLimit(headers) {
+  if (!headers?.get) return undefined;
+  // A MISSING header is not zero. `headers.get()` returns null for one, and
+  // Number(null) is 0, which read as "no tokens left in the window" — so every
+  // provider that does not publish x-ratelimit-* (Ollama, OpenAI, Azure, any
+  // mock) was paced 45 seconds before EVERY call. Absent must mean unknown.
+  const num = (name) => {
+    const raw = headers.get(name);
+    if (raw === null || raw === undefined || String(raw).trim() === '') return undefined;
+    const value = Number(raw);
+    return Number.isFinite(value) ? value : undefined;
+  };
+  const seconds = (name) => {
+    const raw = headers.get(name);
+    if (!raw) return undefined;
+    const match = String(raw).match(/^(?:(\d+(?:\.\d+)?)m)?(?:(\d+(?:\.\d+)?)s)?$/);
+    if (match && (match[1] || match[2])) return (Number(match[1] ?? 0) * 60) + Number(match[2] ?? 0);
+    const value = Number(String(raw).replace(/[^\d.]/g, ''));
+    return Number.isFinite(value) ? value : undefined;
+  };
+  const limitTokens = num('x-ratelimit-limit-tokens');
+  const remainingTokens = num('x-ratelimit-remaining-tokens');
+  if (limitTokens === undefined && remainingTokens === undefined) return undefined;
+  return {
+    limitTokens,
+    remainingTokens,
+    resetTokensSeconds: seconds('x-ratelimit-reset-tokens'),
+    limitRequests: num('x-ratelimit-limit-requests'),
+    remainingRequests: num('x-ratelimit-remaining-requests'),
+  };
 }
 
 /** { path | base64, mime } → OpenAI image_url content part (data URL). */

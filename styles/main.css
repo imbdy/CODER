@@ -1,93 +1,93 @@
-/* Humanist Airy — external build | 2026-09-17 */
+/* Aurora Depth — external build | 2026-09-17 */
 /* =============================================================
-   Humanist Airy — base layer
+   Aurora Depth — base layer
    Generated from design tokens. Change values in .forge/config.json
    or in the :root block below, never by editing rules ad hoc.
    ============================================================= */
 
 :root {
   /* palette */
-  --color-bg: #faf7f2;
-  --color-surface: #ffffff;
-  --color-surface-alt: #f5efe5;
-  --color-text: #171512;
-  --color-text-muted: #767470;
-  --color-text-faint: #9b9894;
+  --color-bg: #0d1014;
+  --color-surface: #141821;
+  --color-surface-alt: #191e29;
+  --color-text: #eef2f7;
+  --color-text-muted: #909398;
+  --color-text-faint: #63666a;
   --color-accent: #e06a2b;
-  --color-accent-hover: #c3571d;
-  --color-accent-quiet: #e7bda6;
-  --color-accent-soft: rgb(224 106 43 / 0.12);
+  --color-accent-hover: #e7824b;
+  --color-accent-quiet: #834321;
+  --color-accent-soft: rgb(224 106 43 / 0.16);
   --color-accent-readable: #e06a2b;
   --color-on-accent: #0b0b0c;
-  --color-border: rgb(0 0 0 / 0.1);
-  --color-border-strong: rgb(0 0 0 / 0.2);
+  --color-border: rgb(255 255 255 / 0.1);
+  --color-border-strong: rgb(255 255 255 / 0.2);
 
   /* type */
-  --font-sans: "Outfit", "Inter", system-ui, sans-serif;
-  --font-display: "Fraunces", Georgia, serif;
-  --font-mono: "IBM Plex Mono", ui-monospace, monospace;
-  --text-xs: 0.672rem;
-  --text-sm: 0.82rem;
+  --font-sans: "Inter", system-ui, sans-serif;
+  --font-display: "Sora", "Inter", system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, monospace;
+  --text-xs: 0.63rem;
+  --text-sm: 0.794rem;
   --text-base: 1rem;
-  --text-lg: 1.22rem;
-  --text-xl: 1.488rem;
-  --text-2xl: clamp(1.525rem, 1.64rem + 0.36vw, 1.816rem);
-  --text-3xl: clamp(1.861rem, 2.00rem + 0.44vw, 2.215rem);
-  --text-4xl: clamp(2.271rem, 2.44rem + 0.54vw, 2.703rem);
-  --text-5xl: clamp(2.769rem, 2.98rem + 0.66vw, 3.297rem);
+  --text-lg: 1.26rem;
+  --text-xl: 1.588rem;
+  --text-2xl: clamp(1.68rem, 1.81rem + 0.40vw, 2rem);
+  --text-3xl: clamp(2.117rem, 2.28rem + 0.50vw, 2.52rem);
+  --text-4xl: clamp(2.668rem, 2.87rem + 0.64vw, 3.176rem);
+  --text-5xl: clamp(3.362rem, 3.62rem + 0.80vw, 4.002rem);
   --weight-regular: 400;
   --weight-medium: 500;
   --weight-semibold: 600;
   --weight-bold: 700;
-  --tracking-display: -0.015em;
+  --tracking-display: -0.025em;
   --tracking-heading: -0.01em;
   --tracking-body: 0;
   --tracking-caps: 0.08em;
 
   /* space + shape */
   --space-0: 0;
-  --space-1: 5px;
-  --space-2: 10px;
-  --space-3: 15px;
-  --space-4: 20px;
-  --space-6: 30px;
-  --space-8: 40px;
-  --space-12: 60px;
-  --space-16: 80px;
-  --space-24: 120px;
-  --space-32: 160px;
-  --space-section: 125px;
-  --space-sectionLg: 192px;
-  --space-gutter: 25px;
-  --radius-sm: 10px;
-  --radius-md: 16px;
-  --radius-lg: 24px;
-  --radius-xl: 32px;
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-6: 24px;
+  --space-8: 32px;
+  --space-12: 48px;
+  --space-16: 64px;
+  --space-24: 96px;
+  --space-32: 128px;
+  --space-section: 96px;
+  --space-sectionLg: 160px;
+  --space-gutter: 20px;
+  --radius-sm: 6px;
+  --radius-md: 10px;
+  --radius-lg: 16px;
+  --radius-xl: 24px;
   --radius-pill: 999px;
-  --shadow-xs: 0 1px 2px rgb(16 16 20 / 0.06);
-  --shadow-sm: 0 2px 6px rgb(16 16 20 / 0.08);
-  --shadow-md: 0 12px 28px rgb(16 16 20 / 0.10);
-  --shadow-lg: 0 28px 60px rgb(16 16 20 / 0.14);
-  --shadow-accentGlow: 0 14px 40px rgb(224 106 43 / 0.22);
-  --shadow-inset: inset 0 1px 0 rgb(255 255 255 / 0.6);
+  --shadow-xs: 0 1px 2px rgb(0 0 0 / 0.4);
+  --shadow-sm: 0 2px 8px rgb(0 0 0 / 0.45);
+  --shadow-md: 0 10px 30px rgb(0 0 0 / 0.5);
+  --shadow-lg: 0 24px 60px rgb(0 0 0 / 0.55);
+  --shadow-accentGlow: 0 12px 40px rgb(224 106 43 / 0.28);
+  --shadow-inset: inset 0 1px 0 rgb(255 255 255 / 0.06);
 
   /* motion */
   --duration-instant: 90ms;
   --duration-fast: 160ms;
-  --duration-base: 260ms;
-  --duration-slow: 460ms;
-  --duration-cinematic: 720ms;
+  --duration-base: 240ms;
+  --duration-slow: 520ms;
+  --duration-cinematic: 900ms;
   --ease-standard: cubic-bezier(0.2, 0.7, 0.2, 1);
   --ease-emphasized: cubic-bezier(0.16, 1, 0.3, 1);
   --ease-entrance: cubic-bezier(0.22, 1, 0.36, 1);
   --ease-exit: cubic-bezier(0.4, 0, 1, 1);
   --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
-  --stagger: 65ms;
+  --stagger: 70ms;
   --motion-distance: 12px;
   --motion-lift: 2px;
 
   /* layout */
-  --max-width: 74rem;
+  --max-width: 72rem;
   --prose-width: 62ch;
 }
 
@@ -728,6 +728,59 @@ button, input, select, textarea { font: inherit; color: inherit; }
 .footer__links a { color: var(--color-text-muted); text-decoration: none; }
 .footer__links a:hover { color: var(--color-text); text-decoration: underline; }
 .footer__note { margin-top: var(--space-10); font-size: var(--text-xs); color: var(--color-text-faint); }
+
+
+/* ---------------------------------------------------------- premium 3D + scroll ---- */
+
+.hero--premium { position: relative; overflow: clip; }
+.hero-webgl {
+  position: absolute;
+  inset: 0;
+  width: 100%; height: 100%;
+  z-index: 0;
+  pointer-events: none;
+  opacity: 0.95;
+}
+.hero-webgl canvas { width: 100% !important; height: 100% !important; display: block; }
+.hero--premium .container { position: relative; z-index: 1; }
+.hero__orb {
+  position: absolute;
+  border-radius: 50%;
+  background: radial-gradient(circle at 30% 30%, var(--color-accent), transparent 70%);
+  filter: blur(18px);
+  opacity: 0.55;
+  pointer-events: none;
+}
+.hero__orb--1 { width: 420px; height: 420px; top: -8%; right: -6%; }
+.hero__orb--2 { width: 300px; height: 300px; bottom: 10%; left: 6%; opacity: 0.35; }
+.hero__orb--3 { width: 180px; height: 180px; top: 42%; right: 22%; opacity: 0.4; }
+
+.scroll-pin { position: relative; }
+.scroll-pin__sticky {
+  position: sticky;
+  top: 0;
+  height: 100vh;
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+}
+.scroll-reveal { will-change: transform, opacity; }
+.parallax { will-change: transform; }
+.horizontal { display: flex; gap: var(--space-6); will-change: transform; }
+.glass {
+  background: color-mix(in oklab, var(--color-surface) 72%, transparent);
+  backdrop-filter: blur(16px) saturate(1.2);
+  border: 1px solid color-mix(in oklab, var(--color-border) 70%, transparent);
+}
+
+@media (max-width: 60rem) {
+  .hero-webgl { opacity: 0.6; }
+  .scroll-pin__sticky { height: auto; position: relative; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .hero-webgl { display: none !important; }
+  .parallax { transform: none !important; }
+}
 
 
 /* ---------------------------------------------------------------- motion ---- */

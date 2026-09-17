@@ -1,3 +1,4 @@
+import { positiveText } from './negation.mjs';
 /**
  * Design tokens — deterministic, principled design decisions.
  *
@@ -149,8 +150,17 @@ const NAMED_HUES = {
 };
 
 /** Extract an explicit colour intent from a request, or undefined. */
+/**
+ * A colour the brief ASKS for, never one it rules out.
+ *
+ * The inline no/not/without guard below only catches a rejection phrased in
+ * prose. It misses the one that actually reaches this function: the rendered
+ * agreed context ends with "REJECTED: AI-SaaS look, purple, glass", where
+ * "purple" sits in a bare comma list with no negation word in front of it. That
+ * is how a brief whose first demand was "no purple" got accent request:purple.
+ */
 export function extractColorIntent(request = '') {
-  const text = String(request).toLowerCase();
+  const text = positiveText(String(request)).toLowerCase();
   for (const [name, hex] of Object.entries(NAMED_HUES)) {
     if (new RegExp(`\\b${name}\\b`).test(text) && !new RegExp(`\\b(?:no|not|without)\\s+(?:\\w+\\s+){0,2}${name}\\b`).test(text)) {
       return { color: name, accent: hex };

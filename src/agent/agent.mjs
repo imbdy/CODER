@@ -45,7 +45,9 @@ import { retryMessage } from '../model/tool-validator.mjs';
 import { AgentStateMachine, STATES, detectComplexity } from '../runtime/state-machine.mjs';
 import { TodoManager } from '../runtime/todo-manager.mjs';
 import { normalizeAgreedContext, renderAgreedContext, directivesFromContext } from '../runtime/agreed-context.mjs';
+import { chooseArtDirection, decorationFor, artDirectionBlock as renderArtDirectionBlock } from '../design/art-direction.mjs';
 import { runVisualQa, renderFindingsForModel } from '../verify/visual-qa.mjs';
+import { requirementsFromBrief } from '../verify/requirements.mjs';
 import { readWorkspaceFile } from '../workspace/writer.mjs';
 
 /* ---------------------------------------------------------------- grammar ---- */
@@ -211,7 +213,7 @@ export async function runAgent(input, {
   const startedAt = Date.now();
   const brief = normalizeBrief(input);
   const text = briefText(brief);
-  const stepBudget = Number(maxSteps ?? config?.runtime?.maxAgentSteps ?? 24);
+  let stepBudget = Number(maxSteps ?? config?.runtime?.maxAgentSteps ?? 24);
   const transcript = [];
   const actions = [];
   const note = (step, msg) => transcript.push({ step, role: 'system', text: msg });
@@ -234,9 +236,32 @@ export async function runAgent(input, {
   bus.emit(EVENT.THOUGHT, { phase: 'state', text: `complexity=${complexity}` });
   stateMachine.transition(STATES.INSPECTION, { reason: 'workspace inspected', data: { files: inspection.fileCount } });
 
+  // ---- ART DIRECTION: a concrete identity proposal the model can adopt, sharpen
+  // or deliberately replace — so it never starts from a neutral default.
+  const directives = brief.agreed ? directivesFromContext(brief.agreed) : {};
+  const artChoice = chooseArtDirection({ request: text, agreed: directives, inspection, taskType, lockedId: brief.agreed?.build?.artDirection });
+  const artDecoration = decorationFor(artChoice.direction, { request: text, agreed: directives });
+  const artBlock = renderArtDirectionBlock(artChoice.direction, artDecoration);
+  // What the brief literally asks for, so visual QA can check delivery rather
+  // than just correctness. A page can pass every structural check and still be
+  // missing the section the user described.
+  const briefRequirements = requirementsFromBrief(brief.mode === 'refine' ? `${brief.changeRequests.join(' ')} ${brief.agreed?.purpose ?? ''}` : text);
+  if (briefRequirements.length) bus.emit(EVENT.THOUGHT, { phase: 'requirements', text: `brief requires: ${briefRequirements.map((r) => r.label).join('; ')}` });
+
+  // How much context can this brain afford per call? Known before planning, so
+  // the expensive plan prompt can be sized to fit one token window instead of
+  // stalling on the provider's rate limit.
+  const tpm = await router.tokensPerMinute().catch(() => undefined);
+  const tightContext = Boolean(tpm && tpm < Number(config?.runtime?.tightContextBelowTpm ?? 12000));
+  if (tightContext) {
+    stepBudget = Math.min(stepBudget, Number(config?.runtime?.maxAgentStepsTight ?? 10));
+    bus.emit(EVENT.THOUGHT, { phase: 'budget', text: `provider allows ${tpm} tokens/min: skills inform PLANNING only, the implementation prompt carries the spec instead of skill bodies, ${stepBudget} turns max` });
+  }
+  bus.emit(EVENT.THOUGHT, { phase: 'art-direction', text: artBlock });
+
   // ---- SKILL_SELECTION (model picks, runtime enforces + loads)
   bus.emit(EVENT.PHASE, { phase: 'skills' });
-  const skills = await selectSkills({ router, registry, brief: { text, mode: brief.mode, agreed: brief.agreed, taskType }, inspection, config, bus, logger, complexity });
+  const skills = await selectSkills({ router, registry, brief: { text, mode: brief.mode, agreed: brief.agreed, taskType }, inspection, config, bus, logger, complexity, catalogueLimit: tightContext ? 24 : undefined });
   stateMachine.transition(STATES.SKILL_SELECTION, { reason: `skills ${skills.method}`, data: { ids: skills.ids } });
   bus.emit(EVENT.THOUGHT, { phase: 'skills', text: `${skills.method}: ${skills.ids.join(', ')} | tech ${skills.tech.depth}/${skills.tech.animation}` });
 
@@ -249,8 +274,15 @@ export async function runAgent(input, {
   const live = await router.hasLiveModel().catch(() => false);
   if (live) {
     try {
-      const prompt = buildPlanPrompt({ brief: { text }, inspection, skillsBlock: skills.contextBlock.slice(0, 24000), mode: brief.mode, existingOutline: outline, tech: skills.tech, skillIds: skills.ids });
-      const response = await router.text(prompt, { kind: 'plan', phase: 'plan', liveOnly: true, maxTokens: 2200, temperature: 0.3, system: 'You are a design director and lead frontend engineer. Reply with STRICT JSON only.' });
+      // On a metered endpoint the plan prompt is the one call that must still
+      // carry real expertise, so it gets the skills — trimmed to fit one window.
+      const skillsBudgetChars = tightContext ? 2600 : 24000;
+      const prompt = buildPlanPrompt({ brief: { text }, inspection, skillsBlock: skills.contextBlock.slice(0, skillsBudgetChars), mode: brief.mode, existingOutline: outline, tech: skills.tech, skillIds: skills.ids, artDirectionBlock: artBlock });
+      // The spec + TODO JSON is long. Starving its output truncates the JSON and
+      // silently drops the whole plan back to the deterministic builder, so the
+      // output gets real room even on a metered endpoint (the prompt is trimmed
+      // instead).
+      const response = await router.text(prompt, { kind: 'plan', phase: 'plan', liveOnly: true, maxTokens: tightContext ? 1500 : 3600, temperature: 0.3, system: tightContext ? 'You are a design director. Reply with STRICT JSON only: {"spec":{...},"tech":{...}}. Omit todos and files entirely. No prose.' : 'You are a design director and lead frontend engineer. Reply with STRICT JSON only, no prose and no code fence commentary.' });
       const parsed = extractJson(response.text);
       if (parsed.ok && parsed.value && typeof parsed.value === 'object') {
         spec = specFromModel(parsed.value, { brief, tech: skills.tech, understanding, inspection });
@@ -258,7 +290,23 @@ export async function runAgent(input, {
         planWarnings.push(...built.warnings);
         if (built.manager.list().length) { todoManager = built.manager; planSource = 'model'; }
       } else {
-        planWarnings.push('plan reply was not valid JSON — deterministic spec used');
+        planWarnings.push(`plan reply was not valid JSON (${String(response.text ?? '').length} chars, ends "${String(response.text ?? '').slice(-60).replace(/\s+/g, ' ')}")`);
+      }
+      // The spec is the valuable half. If the combined spec+TODO JSON did not
+      // survive, ask for the spec alone rather than dropping the model's design
+      // thinking and falling all the way back to the deterministic builder.
+      if (!spec) {
+        const retry = await router.text(`${prompt}\n\nYour previous reply could not be parsed. Reply again with ONLY the "spec" and "tech" objects, no todos and no files:\n{"spec": {...}, "tech": {...}}`, {
+          kind: 'plan', phase: 'plan-spec-retry', liveOnly: true, maxTokens: tightContext ? 1500 : 2000, temperature: 0.2,
+          system: 'Reply with STRICT JSON only: an object with "spec" and "tech" keys. No prose.',
+        });
+        const reparsed = extractJson(retry.text);
+        if (reparsed.ok && reparsed.value?.spec) {
+          spec = specFromModel(reparsed.value, { brief, tech: skills.tech, understanding, inspection });
+          if (spec) { planSource = 'model-spec'; planWarnings.push('recovered the design spec on a second, smaller call; TODOs derived from it'); }
+        } else {
+          planWarnings.push('spec retry also failed — deterministic spec used');
+        }
       }
     } catch (error) {
       planWarnings.push(`plan call failed: ${String(error?.message ?? error).slice(0, 160)}`);
@@ -293,14 +341,20 @@ export async function runAgent(input, {
   // ---- IMPLEMENTATION (tool loop)
   const tools = createQwenToolContext({ workspaceDir, config, bus, dryRun, registry });
   const agreedBlock = brief.agreed ? renderAgreedContext(brief.agreed) : '';
+  // Token discipline: the system prompt is re-sent on EVERY implementation turn,
+  // so carrying ~4k tokens of skill bodies there costs more than the whole build
+  // is worth on a metered endpoint. The skills did their job in PLANNING — the
+  // spec and the art direction carry those decisions concretely. Below a low
+  // token-per-minute ceiling we therefore ship the decisions, not the textbooks.
   const system = buildAgentSystemPrompt({
-    inspection, spec, skills: { contextBlock: skills.contextBlock }, todos: todoManager.list(), mode: brief.mode,
+    inspection, spec, skills: tightContext ? undefined : { contextBlock: skills.contextBlock }, todos: todoManager.list(), mode: brief.mode,
     agreedBlock, brief: brief.mode === 'refine' ? `Requested changes: ${brief.changeRequests.join(' | ') || brief.request}` : (brief.request || ''),
-    loadedSkillIds: skills.ids, existingOutline: outline,
+    loadedSkillIds: skills.ids, existingOutline: outline, artDirectionBlock: artBlock,
+    skillDigest: tightContext ? skills.ids.join(', ') : '',
   });
   const messages = [{ role: 'user', content: kickoffMessage({ brief, todoManager, inspection }) }];
-  const isGroq = /groq/.test(String(config?.models?.openaiCompatible?.baseUrl ?? '')) || /gpt-oss/.test(String(config?.models?.openaiCompatible?.model ?? ''));
-  const historyBudget = isGroq ? 3500 : Number(config?.runtime?.contextBudgetTokens ?? 24000);
+  const historyBudget = tightContext ? Math.max(700, Math.floor((tpm ?? 8000) * 0.12)) : Number(config?.runtime?.contextBudgetTokens ?? 24000);
+  const turnTokenCap = tightContext ? Math.min(2200, Math.floor((tpm ?? 8000) * 0.28)) : Math.min(8192, Number(config?.runtime?.maxTokens ?? 8192));
   const maxQaRounds = Number(config?.runtime?.maxQaRounds ?? (complexity === 'complex' ? 3 : complexity === 'trivial' ? 1 : 2));
   const MAX_REPAIR = Number(config?.runtime?.maxAgentRepairPasses ?? 2);
 
@@ -334,9 +388,9 @@ export async function runAgent(input, {
       const html = readWorkspaceFile(workspaceDir, entry) ?? '';
       const cssRel = allRels().find((r) => r.endsWith('.css'));
       const css = cssRel ? readWorkspaceFile(workspaceDir, cssRel) ?? '' : '';
-      qa = await runVisualQa({ workspaceDir, entry, config, spec, agreed: brief.agreed, router, bus, outDir, round, mode: brief.mode, html, css });
+      qa = await runVisualQa({ workspaceDir, entry, config, spec, agreed: brief.agreed, router, bus, outDir, round, mode: brief.mode, html, css, requirements: briefRequirements });
     }
-    qaRounds.push({ round, step, reason, rendered: qa.rendered, method: qa.method, score: qa.score, verdict: qa.verdict, findings: qa.findings, screenshots: qa.screenshots, critique: qa.critique ? { provider: qa.critique.provider, model: qa.critique.model, vision: qa.critique.vision, summary: qa.critique.summary, score: qa.critique.score, verdict: qa.critique.verdict } : undefined, reason_unrendered: qa.reason, ms: qa.ms });
+    qaRounds.push({ round, step, reason, rendered: qa.rendered, method: qa.method, score: qa.score, verdict: qa.verdict, findings: qa.findings, screenshots: qa.screenshots, coverage: qa.coverage, critique: qa.critique ? { provider: qa.critique.provider, model: qa.critique.model, vision: qa.critique.vision, summary: qa.critique.summary, score: qa.critique.score, verdict: qa.critique.verdict } : undefined, reason_unrendered: qa.reason, ms: qa.ms });
     note(step, `visual QA round ${round}: ${qa.rendered ? qa.method : `NOT rendered (${qa.reason})`} score ${qa.score} verdict ${qa.verdict} (${qa.findings.length} findings)`);
     const qaTodo = todoManager.list().find((t) => /visual qa|render|critique/i.test(t.description) || t.id === 'QA');
     if (qaTodo && qa.verdict === 'pass') { try { for (const dep of qaTodo.dependencies ?? []) if (todoManager.get(dep)?.status !== 'completed') todoManager.update(dep, { status: 'completed', note: 'auto: preceded visual QA pass' }); if (qaTodo.status !== 'completed') todoManager.update(qaTodo.id, { status: 'completed', note: `visual QA pass ${qa.score}` }); } catch {} }
@@ -352,13 +406,14 @@ export async function runAgent(input, {
 
   bus.emit(EVENT.PHASE, { phase: 'implementation' });
   for (let step = 0; step < stepBudget; step += 1) {
-    const trimmed = trimHistory(messages, { maxTokens: historyBudget, keepLast: isGroq ? 2 : 6, maxMessages: isGroq ? 6 : 14 });
+    const trimmed = trimHistory(messages, { maxTokens: historyBudget, keepLast: tightContext ? 3 : 6, maxMessages: tightContext ? 7 : 14 });
     if (trimmed !== messages) { messages.length = 0; messages.push(...trimmed); }
-    if (isGroq && step > 0) await new Promise((r) => setTimeout(r, 2500));
+    // The provider's own token window is respected by the router (awaitBudget);
+    // no blind sleep is needed here.
 
     let response;
     try {
-      response = await router.text(undefined, { kind: 'code', system, messages, liveOnly: true, maxTokens: Math.min(8192, Number(config?.runtime?.maxTokens ?? 8192)), temperature: 0.35, phase: 'agent' });
+      response = await router.text(undefined, { kind: 'code', system, messages, liveOnly: true, maxTokens: turnTokenCap, temperature: 0.35, phase: 'agent' });
     } catch (error) {
       lastError = String(error?.message ?? error);
       note(step, `model call failed: ${lastError}`);
@@ -517,6 +572,23 @@ export async function runAgent(input, {
     break;
   }
 
+  // The loop can end without a done signal: the model failed, the step budget
+  // ran out, or it stopped talking. Files still exist, so they still get looked
+  // at and tested. Skipping QA here is how a broken run reported nothing at all.
+  if (!done && writtenRels().length) {
+    if (!qaRounds.length) {
+      try { await runQaRound(stepBudget, lastError ? `loop ended on a provider failure: ${String(lastError).slice(0, 120)}` : 'loop ended without a done signal'); }
+      catch (error) { note(stepBudget, `post-loop visual QA failed: ${String(error?.message ?? error).slice(0, 160)}`); }
+    }
+    if (!testing) {
+      bus.emit(EVENT.PHASE, { phase: 'testing' });
+      try {
+        testing = runTests({ workspaceDir, rels: allRels(), inspection, config });
+        bus.emit(EVENT.VERIFY, { ok: testing.ok, summary: testing.issues.join('; ') || 'tests passed', issues: testing.issues, warnings: testing.warnings });
+      } catch (error) { note(stepBudget, `post-loop tests failed: ${String(error?.message ?? error).slice(0, 160)}`); }
+    }
+  }
+
   // ---- result
   const writes = actions
     .filter((a) => ['write_file', 'edit_file'].includes(a.tool) && a.result && !a.result.error && (a.args.path ?? a.args.rel))
@@ -534,6 +606,7 @@ export async function runAgent(input, {
     skills: { method: skills.method, loaded: skills.loaded.map((l) => l.id), required: skills.required, readOnDemand: [...skillsReadSet], skipped: skills.skipped, catalogueSize: skills.catalogueSize, tech: skills.tech },
     plan: { source: planSource, todos: todoManager.stats(), ensured, warnings: planWarnings, blocked: blockedTodos },
     spec: { source: spec.source, depth: spec.tech?.depth, animation: spec.tech?.animation },
+    artDirection: { id: artChoice.direction.id, name: artChoice.direction.name, composition: artChoice.direction.composition, voice: artChoice.direction.voice, decoration: artDecoration.layers, canvas: artDecoration.canvas, reasons: artChoice.reasons },
     qa: { rounds: qaRounds.length, rendered: Boolean(finalQa?.rendered), method: finalQa?.method, score: finalQa?.score, verdict: finalQa?.verdict, screenshots: finalQa?.screenshots ?? [], history: qaRounds.map((r) => ({ round: r.round, score: r.score, verdict: r.verdict, findings: r.findings.length, rendered: r.rendered })), unrenderedReason: finalQa && !finalQa.rendered ? finalQa.reason_unrendered : undefined },
     testing: testing ? { ok: testing.ok, issues: testing.issues, warnings: testing.warnings.slice(0, 8) } : { ok: false, issues: ['tests did not run (loop ended before completion)'], warnings: [] },
     files: dedupedWrites.map((w) => w.rel),

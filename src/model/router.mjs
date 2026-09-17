@@ -8,6 +8,7 @@
  */
 
 import { extractJson, extractCodeBlock } from './json.mjs';
+import { suggestedDelayMs, isDailyLimit } from './rate-limit.mjs';
 import { OllamaProvider } from './ollama.mjs';
 import { OpenAICompatibleProvider } from './openai-compatible.mjs';
 import { DeterministicProvider } from './deterministic.mjs';
@@ -54,17 +55,40 @@ export class ModelRouter {
     return provider;
   }
 
+  /**
+   * Is this provider usable? This is the gate that decides whether the whole
+   * session gets a real model or the heuristic engine, so one flaky probe must
+   * not decide it:
+   *
+   *   - a failed probe is RETRIED once, because cold DNS/TLS on the first call
+   *     to a remote endpoint is common and says nothing about availability
+   *   - a negative result is cached only briefly, so a blip cannot poison a long
+   *     session, while a genuinely absent provider is not re-probed every call
+   *   - a failure is announced on the bus, because silently downgrading to
+   *     heuristics is the one outcome nobody can debug afterwards
+   */
   async #healthy(provider) {
-    if (this.healthCache.has(provider.id)) return this.healthCache.get(provider.id);
-    let result;
-    try {
-      result = await provider.health().catch((error) => ({ ok: false, provider: provider.id, error: String(error?.message ?? error) }));
-    } catch (error) {
-      result = { ok: false, provider: provider.id, error: String(error?.message ?? error) };
+    const cached = this.healthCache.get(provider.id);
+    if (cached && (cached.ok || Date.now() < cached.retryAfter)) return cached;
+    const probe = async () => {
+      try {
+        return await provider.health().catch((error) => ({ ok: false, provider: provider.id, error: String(error?.message ?? error) }));
+      } catch (error) {
+        return { ok: false, provider: provider.id, error: String(error?.message ?? error) };
+      }
+    };
+    let result = await probe();
+    if (!result.ok && provider.id !== 'deterministic' && provider.ready) {
+      const retry = await probe();
+      result = retry.ok ? retry : { ...retry, attempts: 2 };
     }
-    this.healthCache.set(provider.id, result);
-    if (!result.ok && this.logger) {
-      this.logger.debug(`provider ${provider.id} unavailable`, { hint: result.hint, error: result.error });
+    const negativeTtlMs = Number(this.config?.runtime?.healthRetryMs ?? 20000);
+    this.healthCache.set(provider.id, { ...result, retryAfter: result.ok ? Infinity : Date.now() + negativeTtlMs });
+    if (!result.ok) {
+      this.logger?.debug('provider ' + provider.id + ' unavailable', { hint: result.hint, error: result.error });
+      if (provider.id !== 'deterministic' && provider.ready) {
+        this.bus?.emit('warn', { message: 'provider ' + provider.id + ' probe failed (' + (result.attempts ?? 1) + 'x): ' + String(result.error ?? result.hint ?? 'unknown').slice(0, 160) });
+      }
     }
     return result;
   }
@@ -104,6 +128,16 @@ export class ModelRouter {
     if (this.preferred) return this.preferred.id !== 'deterministic';
     const chain = await this.activeChain();
     return chain.some((provider) => provider && provider.id !== 'deterministic');
+  }
+
+  /**
+   * Tokens per minute the active brain allows, when it says so.
+   * The executor uses this to decide how much context it can afford per turn.
+   */
+  async tokensPerMinute() {
+    const chain = await this.activeChain();
+    const provider = chain.find((entry) => entry && entry.id !== 'deterministic');
+    return provider?.tokensPerMinute;
   }
 
   /** Can the brain that would answer right now look at screenshots? */
@@ -179,8 +213,8 @@ export class ModelRouter {
       }
     }
 
-    throw new ModelError(`no provider produced valid JSON for "${kind}"`, {
-      details: { errors },
+    throw new ModelError(`no provider produced valid JSON for "${kind}"` + (errors.length ? ` — ${errors.at(-1)}` : ''), {
+      details: { errors, dailyQuotaExhausted: errors.some(isDailyLimit) },
       hint: 'Run `artisan doctor`; or force the offline brain with --brain deterministic.',
     });
   }
@@ -214,11 +248,22 @@ export class ModelRouter {
       });
     }
     let emitted = false;
+    // A rate limit is transient by definition: on a metered endpoint it is the
+    // expected signal, not a failure. Giving up after one retry was ending whole
+    // builds with "no provider produced text".
+    const maxAttempts = Number(this.config?.runtime?.providerAttempts ?? 4);
     for (const provider of chain) {
       const started = Date.now();
-      for (let attempt = 1; attempt <= 2; attempt += 1) {
+      for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
       try {
         const wantsImages = Array.isArray(images) && images.length > 0;
+        // Pace against the provider's own token window rather than discovering
+        // the limit with a 429.
+        if (typeof provider.awaitBudget === 'function') {
+          const estimate = Math.ceil(((system?.length ?? 0) + (prompt?.length ?? 0) + (messages ?? []).reduce((n, m) => n + String(m.content ?? '').length, 0)) / 4) + Number(maxTokens ?? 0);
+          const waited = await provider.awaitBudget(estimate);
+          if (waited) this.logger?.debug(`paced ${waited}ms for the token window`, { estimate });
+        }
         const response = await provider.generate({
           prompt: messages ? undefined : prompt,
           messages,
@@ -245,16 +290,38 @@ export class ModelRouter {
         errors.push(`${provider.id}: ${msg}`);
         this.#emitCall({ provider, kind, phase, ok: false, error: msg });
         if (emitted) throw error;
-        if (isRate && attempt === 1) {
-          const waitMs = (msg.match(/try again in ([\d.]+)s/)?.[1] ? parseFloat(msg.match(/try again in ([\d.]+)s/)[1]) * 1000 : 20000);
-          await new Promise(r => setTimeout(r, Math.min(waitMs + 2000, 30000)));
+        // A DAILY quota does not refill in the next 45 seconds. Retrying it burns
+        // minutes and then reports a generic failure, which reads like a bug in
+        // the agent rather than an exhausted account. Stop and say what happened.
+        if (isRate && isDailyLimit(msg)) {
+          this.bus?.emit('warn', { message: `${provider.id}: daily quota exhausted — ${msg.slice(0, 200)}` });
+          break;
+        }
+        if (isRate && attempt < maxAttempts) {
+          const waitMs = suggestedDelayMs(msg) || Math.min(30000, 4000 * attempt);
+          this.logger?.debug(`rate limited, waiting ${Math.round(waitMs)}ms (attempt ${attempt}/${maxAttempts})`);
+          this.bus?.emit('warn', { message: `${provider.id} rate limited, waiting ${Math.round(waitMs / 100) / 10}s (attempt ${attempt}/${maxAttempts})` });
+          await new Promise((r) => setTimeout(r, Math.min(waitMs + 1500, 70000)));
           continue;
         }
+        // An empty or malformed response is worth one cheap retry too.
+        if (!isRate && attempt === 1 && /empty response|not valid|unparseable/i.test(msg)) continue;
         break;
       }
       }
     }
-    throw new ModelError(`no provider produced text for "${kind}"`, { details: { errors } });
+    // Root cause in the MESSAGE, not only in details: callers log error.message,
+    // so burying the words the provider actually said ("tokens per day (TPD):
+    // Limit 200000, Used 200000") turns an exhausted account into an
+    // unexplained agent failure, and the model gets blamed for a billing wall.
+    const cause = errors.at(-1) ?? 'no provider attempted the call';
+    const daily = errors.some(isDailyLimit);
+    throw new ModelError(`no provider produced text for "${kind}" — ${cause}`, {
+      details: { errors, dailyQuotaExhausted: daily },
+      hint: daily
+        ? 'The DAILY token quota for this model is exhausted and will not refill for hours. Switch model or key (ARTISAN_MODEL / ARTISAN_API_KEY), or run with --brain deterministic.'
+        : 'Run `artisan doctor`; or force the offline brain with --brain deterministic.',
+    });
   }
 
   #emitCall({ provider, kind, phase, response, started, ok, attempt = 1, note, error }) {

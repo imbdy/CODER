@@ -6,6 +6,9 @@
  * the request, then fills content slots with specific copy (never lorem ipsum).
  */
 
+import { positiveText } from './negation.mjs';
+import { copyFor, isPlaceholderBrand, lexiconFor } from './copy.mjs';
+
 const SECTION_LIBRARY = {
   nav: { purpose: 'orientation', layouts: ['minimal-links', 'split-cta', 'with-status'], density: 'low' },
   hero: { purpose: 'focal statement', layouts: ['asymmetric-split', 'centered-stage', 'editorial-type', 'product-led'], density: 'high' },
@@ -13,6 +16,7 @@ const SECTION_LIBRARY = {
   features: { purpose: 'capability detail', layouts: ['alternating', 'bento', 'list-with-icons', 'three-column'], density: 'high' },
   showcase: { purpose: 'demonstration', layouts: ['side-by-side', 'full-bleed-figure', 'before-after'], density: 'high' },
   process: { purpose: 'explain how', layouts: ['numbered-steps', 'timeline'], density: 'medium' },
+  spec: { purpose: 'specification', layouts: ['specification-table'], density: 'medium' },
   pricing: { purpose: 'decision', layouts: ['two-tier', 'three-tier', 'single-plan'], density: 'medium' },
   testimonials: { purpose: 'social proof', layouts: ['single-quote', 'quotes-grid'], density: 'medium' },
   faq: { purpose: 'objection handling', layouts: ['disclosure-list'], density: 'medium' },
@@ -46,15 +50,49 @@ const TASK_SECTIONS = {
   component: [],
 };
 
-const SECTION_ORDER = ['nav', 'hero', 'proof', 'stats', 'features', 'showcase', 'process', 'pricing', 'testimonials', 'faq', 'cta', 'footer', 'form'];
+const SECTION_ORDER = ['nav', 'hero', 'proof', 'stats', 'features', 'showcase', 'process', 'spec', 'pricing', 'testimonials', 'faq', 'cta', 'footer', 'form'];
 
 /**
  * @returns {{kind: string, sections: Array<object>, notes: string[], requestedSections: string[]}}
  */
-export function composePage({ request = '', taskType = 'create-page', projectKind = 'landing-page', direction, subject = {}, wants = [] } = {}) {
+export function composePage({ request = '', taskType = 'create-page', projectKind = 'landing-page', direction, subject = {}, wants = [], artDirection, lockedSections } = {}) {
   const notes = [];
-  const wanted = detectRequestedSections(request, wants);
-  let types = wanted.length ? wanted : (RECIPES[projectKind] ?? RECIPES['landing-page']);
+  const detected = detectRequestedSections(request, wants);
+  // A refinement edits the page that exists. Re-deriving the plan from a
+  // refine brief ("Do it.") loses the enumeration that shaped the create
+  // pass, and the dropped pricing tiers and FAQ come straight back.
+  const locked = (lockedSections ?? []).filter((type) => SECTION_LIBRARY[type]);
+  const wanted = detected.types;
+  const recipe = RECIPES[projectKind] ?? RECIPES['landing-page'];
+  // An exclusive request ("a login page") replaces the recipe. Sections the brief
+  // asks for by name ("the specification, then one closing action") EXTEND it —
+  // dropping the frame is how a page ended up with no nav, no hero and no footer.
+  let types = recipe;
+  if (locked.length) {
+    types = SECTION_ORDER.filter((type) => new Set(locked).has(type));
+    notes.push(`section plan kept from the existing build: ${types.join(', ')}`);
+  } else if (wanted.length) {
+    if (detected.exclusive) {
+      // "a login page" / "a component" IS the whole page. Anything else still
+      // needs its frame: a brief that merely mentions "dashboard" was losing
+      // its nav, hero and footer.
+      const selfContained = wanted.some((type) => ['form', 'demo'].includes(type));
+      types = selfContained ? wanted : SECTION_ORDER.filter((type) => new Set([...wanted, 'nav', 'hero', 'footer']).has(type));
+      notes.push(selfContained
+        ? `sections replaced by the request: ${types.join(', ')}`
+        : `requested sections kept inside the page frame: ${types.join(', ')}`);
+    } else if (detected.enumerated) {
+      // The brief listed the page. Keep the frame plus what it asked for and
+      // nothing else: a brief that says "the mechanism, the specification, one
+      // quote, one closing action" must not also ship pricing tiers and an FAQ.
+      const frame = new Set([...wanted, 'nav', 'hero', 'footer']);
+      types = SECTION_ORDER.filter((type) => frame.has(type));
+      notes.push(`the brief enumerates the page; recipe extras dropped: ${recipe.filter((type) => !frame.has(type)).join(', ') || 'none'}`);
+    } else {
+      types = SECTION_ORDER.filter((type) => new Set([...recipe, ...wanted]).has(type));
+      notes.push(`sections requested and added to the ${projectKind} frame: ${wanted.join(', ')}`);
+    }
+  }
 
   if (taskType === 'create-component') {
     const demo = composeComponentDemo({ request, direction, subject, notes });
@@ -66,7 +104,7 @@ export function composePage({ request = '', taskType = 'create-page', projectKin
 
   const sections = types.map((type, index) => {
     const spec = SECTION_LIBRARY[type] ?? SECTION_LIBRARY.features;
-    const layout = pickLayout(type, spec.layouts, direction);
+    const layout = type === 'hero' && artDirection ? artDirection.composition : pickLayout(type, spec.layouts, direction);
     return {
       id: `${type}-${index + 1}`,
       type,
@@ -81,14 +119,85 @@ export function composePage({ request = '', taskType = 'create-page', projectKin
     notes.push('composition lacks a credibility section — the page would read as a template');
   }
 
+  // The art direction owns the copy voice and the brand: replace the generic
+  // template copy with domain-specific lines (see design/copy.mjs).
+  if (artDirection) {
+    // Only a name the brief actually stated ("called X", quoted, or a proper noun)
+    // may be used as the brand; a derived common noun gets a coined identity.
+    const named = ['quoted', 'proper-noun'].includes(subject.matchedOn) ? subject.subject : '';
+    const copy = copyFor({ brand: named, domain: subject.domain, voice: artDirection.voice, request });
+    notes.push(`copy: ${copy.voice} voice, brand "${copy.brand}" (${named && !isPlaceholderBrand(named) ? 'from the brief' : 'coined — the brief named none'})`);
+    notes.push('figures in the copy are plausible placeholders — replace them with real measurements before launch');
+    for (const section of sections) {
+      const c = section.content;
+      switch (section.type) {
+        case 'nav': c.brand = copy.brand; c.cta = { ...(copy.navCta ?? copy.primaryCta) }; break;
+        case 'hero':
+          Object.assign(c, {
+            eyebrow: copy.eyebrow, headline: copy.headline, altHeadline: copy.altHeadline, subhead: copy.lede,
+            primaryCta: { ...copy.primaryCta }, secondaryCta: { ...copy.secondaryCta }, proofPoint: copy.proofPoint,
+            rail: copy.rail, figureLabel: copy.figureLabel, layout: artDirection.composition,
+          });
+          break;
+        case 'features': c.label = copy.sections.features[0]; c.heading = copy.sections.features[1]; c.items = copy.features; break;
+        case 'showcase': c.label = copy.sections.showcase[0]; c.heading = copy.sections.showcase[1]; break;
+        case 'process': c.heading = copy.sections.process[1]; break;
+        case 'cta': c.heading = copy.sections.cta[1]; c.body = copy.ctaBody; c.cta = { ...copy.primaryCta }; break;
+        case 'proof': c.label = 'By the numbers'; c.items = []; c.metrics = copy.figures.map(([value, label]) => ({ value, label })); break;
+        case 'footer': c.brand = copy.brand; c.note = `© ${new Date().getFullYear()} ${copy.brand}.`; break;
+        case 'testimonials': if (copy.sections.testimonials) { c.label = copy.sections.testimonials[0]; c.heading = copy.sections.testimonials[1]; } break;
+        default: break;
+      }
+    }
+    return { kind: projectKind, sections, notes, requestedSections: wanted, copy, title: copy.title, brand: copy.brand };
+  }
+
   return { kind: projectKind, sections, notes, requestedSections: wanted };
 }
 
 function detectRequestedSections(request, wants = []) {
-  const haystack = String(request).toLowerCase();
+  // Only the user's own words decide the sections. A composed brief appends the
+  // rendered agreed context, and its field labels ("Hero: …") were being read as
+  // a request for a hero-only recipe.
+  const primary = String(request).split(/\n\s*AGREED DESIGN CONTEXT/i)[0].split(/\n\s*\[?agreed (?:design )?context/i)[0];
+  // Sections come from what the brief ASKS for. Matching the raw text reads its
+  // rejections as requests: "no three-identical-cards features section" was
+  // adding a features grid, and the page kept growing the very sections the
+  // brief ruled out. The full text still decides the enumeration test below,
+  // because "then" and "below that" are structure words, not wants.
+  const haystack = positiveText(primary).toLowerCase();
+  const structure = primary.toLowerCase();
   const found = new Set(wants);
+  // The narrative the brief asks for, in its own language. Additive: these name
+  // sections to include, they do not describe the whole page.
+  if (/\bhow (it|they) (is|are) made\b|\bprocess\b|\bhow it works\b|\bmethod\b/.test(haystack)) found.add('process');
+  if (/\bmechanism\b|\bin (?:three|3|four|4|five|5) (?:moves|steps|stages)\b|\bstep by step\b/.test(haystack)) found.add('process');
+  // "Specification" belongs to the spec table below, not here. Routing it to a
+  // features grid is what made a brief that asked for a specification table get
+  // three cards instead, and then fail its own coverage check.
+  if (/\bwhat it is\b|\bfeatures?\b|\bwhat you get\b|\bcapabilit/.test(haystack)) found.add('features');
+  // A specification table is a table. Folding it into 'features' is why the
+  // coverage gate reported a missing table on every build: nothing could make one.
+  if (/\bspecification\b|\bspecs?\b|\bdata ?sheet\b|\btechnical (?:detail|figure)/.test(haystack)) found.add('spec');
+  if (/\bnumbers?\b|\bmetrics?\b|\bproof\b|\bevidence\b/.test(haystack)) found.add('proof');
+  if (/\bclosing action\b|\bcall to action\b|\bcta\b|\bone action\b/.test(haystack)) found.add('cta');
+  if (/\bwho it(?:'s| is) for\b|\baudience\b|\btestimonial|\bquote/.test(haystack)) found.add('testimonials');
+  // An exclusive ask names the artefact ITSELF: "a login page", "a pricing
+  // page", "just a hero section". A brief that merely describes one of its
+  // sections ("the hero should state what the machine does") is not asking for a
+  // hero-only page — matching the bare word was adding a credibility logo row to
+  // a brief that had already enumerated its own five sections.
+  let exclusive = false;
+  const ASK_HEAD = String.raw`\b(?:just |only |simply )?(?:a|an|the)?\s*`;
+  const ASK_TAIL = String.raw`\s+(?:page|screen|view|section|component|flow|form)\b`;
+  const ASK_VERB = String.raw`\b(?:build|make|create|design|need|want)\s+(?:me\s+)?(?:a|an|the)?\s*`;
   for (const [key, types] of Object.entries(TASK_SECTIONS)) {
-    if (haystack.includes(key)) types.forEach((type) => found.add(type));
+    if (!types.length) continue;
+    const named = new RegExp(ASK_HEAD + key + ASK_TAIL, 'i').test(haystack)
+      || new RegExp(ASK_VERB + key + String.raw`\b`, 'i').test(haystack);
+    if (!named) continue;
+    types.forEach((type) => found.add(type));
+    exclusive = true;
   }
   if (/pricing|plans/.test(haystack)) found.add('pricing');
   if (/testimonial|review/.test(haystack)) found.add('testimonials');
@@ -96,7 +205,12 @@ function detectRequestedSections(request, wants = []) {
   if (/dashboard|analytics/.test(haystack)) { found.add('stats'); found.add('features'); }
   if (/footer/.test(haystack)) found.add('footer');
   if (/nav|header/.test(haystack)) found.add('nav');
-  return SECTION_ORDER.filter((type) => found.has(type));
+  // Did the brief lay out the page itself? "Open with X, then Y, then the
+  // specification, and one closing action" is a table of contents, and adding a
+  // recipe's pricing tiers and FAQ accordion on top of it produces exactly the
+  // generic marketing page the brief was trying to avoid.
+  const enumerated = found.size >= 3 && /\b(?:open with|start with|below that|after that|then)\b/.test(structure);
+  return { types: SECTION_ORDER.filter((type) => found.has(type)), exclusive, enumerated };
 }
 
 function pickLayout(type, layouts, direction) {
@@ -123,6 +237,16 @@ const SUBJECT_PATTERNS = [
   { re: /(coffee|roaster|espresso)/i, subject: 'Coffee', domain: 'speciality coffee' },
   { re: /(hotel|resort|boutique stay)/i, subject: 'Stay', domain: 'hospitality' },
   { re: /(portfolio|designer|photographer|studio)/i, subject: 'Work', domain: 'creative portfolio' },
+  // Specific technical domains must win over the generic "software" bucket:
+  // matching "tool" first is what produced the placeholder brand "Platform".
+  { re: /\b(ai|llm|genai|copilot|agentic|machine learning)\b[^.]{0,40}\b(developer|dev|coding|engineering|code)\b|\b(developer|coding|code)\b[^.]{0,30}\b(ai|llm|copilot|assistant)\b/i, subject: 'Codebase', domain: 'ai' },
+  { re: /\b(developer tool|devtool|dev tool|cli|sdk|api|codebase|repository|repo|ci\/cd|pull request|code review)\b/i, subject: 'Codebase', domain: 'developer tool' },
+  // A named physical object outranks the loose "ai|model" bucket below it. A
+  // brief about a film scanner is about a machine even when it also says the
+  // word "model", and matching one loose token first is how a hand-built
+  // instrument became a page about typed graphs.
+  { re: /\b(keyboard|hardware|device|camera|scanner|lens|optic(?:s|al)?|film|turntable|watch|speaker|headphone|amplifier|furniture|chair|lamp|bicycle|bike|instrument|machined|machinist|enclosure|lathe|mechanism|hand-?(?:built|made|assembled)|workshop|machine shop)\b/i, subject: 'Object', domain: 'hardware' },
+  { re: /\b(ai|llm|genai|neural|model)\b/i, subject: 'Model', domain: 'ai' },
   { re: /(saas|platform|tool|dashboard|product)/i, subject: 'Platform', domain: 'software' },
   { re: /(restaurant|menu|kitchen|bakery)/i, subject: 'Kitchen', domain: 'food & drink' },
   { re: /(fitness|gym|training|workout)/i, subject: 'Training', domain: 'health & fitness' },
@@ -130,21 +254,39 @@ const SUBJECT_PATTERNS = [
   { re: /(travel|tour|trip|destination)/i, subject: 'Journey', domain: 'travel' },
 ];
 
-/** Derive a subject/domain from the request so copy is specific, not generic. */
+/**
+ * Derive the subject AND the domain from the request.
+ *
+ * The domain always comes from the pattern table, even when the brief names a
+ * brand: a stated name told us what to call the product, not what it is. Reading
+ * the name first is what gave a mechanical-keyboard brief software copy about
+ * typed graphs and pull requests.
+ */
 export function deriveSubject(request, { fallback = 'Project' } = {}) {
   const text = String(request ?? '');
-  for (const pattern of SUBJECT_PATTERNS) {
-    if (pattern.re.test(text)) return { subject: pattern.subject, domain: pattern.domain, matchedOn: pattern.re.source };
-  }
+  // Match on what the brief ASKS FOR. "Absolutely no AI-SaaS look" is the
+  // strongest AI signal in its own text, and reading it as a request is how a
+  // brief for a hand-built film scanner produced a page about indexing a
+  // codebase with citations. A rejection is not a request.
+  const wanted = positiveText(text);
+  const matched = SUBJECT_PATTERNS.find((pattern) => pattern.re.test(wanted));
+  const domain = matched?.domain ?? 'general';
+
+  // A name the brief states explicitly wins as the subject.
+  const called = text.match(/\b(?:called|named)\s+["\u201c']?([A-Z][\w&'.-]*(?:\s+(?:&|and|of|the)?\s*[A-Z][\w&'.-]*){0,3})["\u201d']?/);
+  if (called) return { subject: called[1].trim(), domain, matchedOn: 'quoted' };
   const quoted = text.match(/["\u201c\u201d']([^"'\u201c\u201d]{3,40})["\u201c\u201d']/);
-  if (quoted) return { subject: quoted[1], domain: 'brand', matchedOn: 'quoted' };
+  if (quoted && !/\b(page|site|website|app|landing)\b/i.test(quoted[1])) return { subject: quoted[1], domain, matchedOn: 'quoted' };
+
+  if (matched) return { subject: matched.subject, domain, matchedOn: matched.re.source };
+
   const propers = [...text.matchAll(/\b([A-Z][a-z]{2,}(?:\s+[A-Z][a-z]{2,}){0,2})\b/g)];
   for (const proper of propers) {
-    if (!/^(Build|Make|Create|Add|Redesign|The|And|With|Use)$/.test(proper[1])) {
-      return { subject: proper[1], domain: 'brand', matchedOn: 'proper-noun' };
+    if (!/^(Build|Make|Create|Add|Redesign|The|And|With|Use|Design|Implement)$/.test(proper[1])) {
+      return { subject: proper[1], domain, matchedOn: 'proper-noun' };
     }
   }
-  return { subject: fallback, domain: 'general', matchedOn: 'fallback' };
+  return { subject: fallback, domain, matchedOn: 'fallback' };
 }
 
 function headlineFor(subject, direction) {
@@ -192,6 +334,8 @@ export function contentFor(type, { request = '', subject = {}, direction, layout
       return { heading: 'See it in place', lead: showcaseLeadFor(domain), bullets: showcaseBulletsFor(domain) };
     case 'process':
       return { heading: 'How it works', steps: processStepsFor(domain) };
+    case 'spec':
+      return { heading: 'Specification', caption: name + ' — measured figures', rows: specRowsFor(domain, name) };
     case 'pricing':
       return { heading: 'Straightforward pricing', tiers: pricingTiersFor(domain) };
     case 'testimonials':
@@ -299,6 +443,29 @@ function proofPointFor(domain) {
   return points[domain] ?? 'Trusted by teams in 12 countries';
 }
 
+/**
+ * Rows for a specification table: the domain's own measured figures first,
+ * then the units that family is actually specified in. Every value is concrete
+ * — a table of "Fast / Yes / Included" is not a specification.
+ */
+function specRowsFor(domain, name) {
+  const lex = lexiconFor(domain);
+  const rows = (lex.figures ?? []).map(([value, label]) => ({ label: label.charAt(0).toUpperCase() + label.slice(1), value }));
+  const extra = lex.family === 'craft'
+    ? [
+        { label: 'Made in', value: lex.place ?? 'the workshop' },
+        { label: 'Build', value: lex.ritual ?? 'assembled and measured by hand' },
+        { label: 'Lead time', value: '6–8 weeks from order' },
+        { label: 'Serviceable', value: 'yes, parts held for ten years' },
+      ]
+    : [
+        { label: 'Deploys to', value: 'your own infrastructure or ours' },
+        { label: 'Data residency', value: 'EU or US, chosen per workspace' },
+        { label: 'Interfaces', value: 'HTTP API, CLI, ' + (lex.unit ?? 'workspace') + ' webhooks' },
+        { label: 'Support', value: 'same-day, from the people who build it' },
+      ];
+  return [...rows, ...extra].slice(0, 7);
+}
 function metricsFor(domain) {
   const presets = {
     software: [{ value: '48ms', label: 'median response' }, { value: '99.98%', label: 'uptime' }, { value: '12k', label: 'teams' }],

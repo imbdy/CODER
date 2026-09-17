@@ -49,10 +49,16 @@ export function stackRules(inspection) {
 }
 
 export const QUALITY_BAR = [
-  'Design intelligence — decide, then implement: one clear visual focal point per viewport; hierarchy readable in three seconds; composition with intent (asymmetry, overlap, editorial rhythm) instead of centered-hero + pill buttons + card grid; typography that carries identity (fluid clamp() display sizes, deliberate tracking and line breaks, 60–72ch measure); a token palette in :root with one signal accent; depth from layout, light and layering before decoration; motion with one easing family that guides attention; every element earns its place.',
-  'Technology serves the design: CSS first; canvas/WebGL only where the design needs real depth, always bounded (one canvas, DPR ≤ 2, pause when hidden, static fallback); GSAP only for real scroll choreography.',
-  'Craft: semantic HTML (header/main/section/footer, exactly one h1), real copy in the product\'s voice (no lorem ipsum, no "coming soon", no TODO), labelled inputs, alt text, :focus-visible, WCAG contrast 4.5:1 for body text, no alert(), null-guarded querySelector, prefers-reduced-motion that leaves all content visible, responsive at 390 / 834 / 1440 with zero horizontal overflow, tap targets ≥ 44px on touch.',
-  'Generic signals that fail review: purple/blue AI gradients, glass everywhere, random floating blobs, bento by default, three identical cards, oversized bold sans headline with no typographic idea, decoration without story.',
+  'YOU ARE THE DESIGN LEAD at a studio known for identities that could not be mistaken for anyone else\'s. This client has already rejected work that felt templated. Before any markup, commit to ONE art direction in a sentence — substrate, type voice, palette temperature, compositional bias, and a single signature move — then check every later decision against it. Take one real aesthetic risk you can justify.',
+  'Typography carries the identity. Never use a commodity face as the identity (Inter, Roboto, Open Sans, Lato, Arial, system-ui alone). Pair one distinctive display face with one quiet text face, plus a mono for labels when it earns its place. Use weight extremes (200 vs 800) rather than 400 vs 600. Fluid display sizes with clamp(), deliberate tracking (display -0.04em to -0.015em, caps 0.08-0.16em), prose capped at 60-72ch, line-height 0.9-1.05 for display and 1.5-1.65 for body.',
+  'Colour: a dominant substrate plus ONE signal accent beats an evenly distributed palette. 60/30/10. Dark substrates are not #000 and not blue-grey by default. Body text must clear 4.5:1 on EVERY surface it lands on, not just the page background. A gradient is allowed as one atmospheric layer, never on text, never purple-to-blue on white.',
+  'Composition: one focal point per viewport, hierarchy readable in three seconds, asymmetry and overlap over centred stacks. The hero is never a centred heading plus subtitle plus two pill buttons. Sections earn their place by answering a question the previous one raised; alternate dense and quiet; never three equal blocks in a row.',
+  'Depth and material come from layering, value steps, light direction and 1px structure — not from blobs. Decoration has a budget of two layers per viewport and each one states its purpose. Film grain at 2-4%, one glass surface at most, vignette or scrim only for legibility over imagery.',
+  'Motion: one well-orchestrated page load with a staggered delay ladder (60-90ms) beats scattered micro-interactions. One easing family. Transform and opacity only. At most two scroll-scrubbed effects. Content must never depend on JS to become visible — hide only under html[data-js] and keep a reduced-motion path that shows everything.',
+  'Technology serves the design, cheapest tier first: CSS, then SVG/canvas, then WebGL only where the design needs real depth — bounded (one canvas, DPR <= 2, paused when hidden, static fallback, never on a coarse pointer without one). GSAP only for genuine scroll choreography.',
+  'Copy must pass the specificity test: if a competitor could paste the line unchanged, rewrite it. Name the mechanism. No "Everything you need", no "Powerful yet simple", no "Get started today", no lorem ipsum, no TODO. If the product has no name, coin a short pronounceable one and use it consistently.',
+  'Craft: semantic HTML (header/main/section/footer, exactly one h1), labelled inputs, alt text, :focus-visible, no alert(), null-guarded querySelector, responsive at 390 / 834 / 1440 with zero horizontal overflow, tap targets >= 44px on touch, nothing readable below 12px.',
+  'Generic signals that fail review on sight: purple/blue AI gradients, glass everywhere, floating blobs or orbs, bento by default, three identical cards, an oversized bold sans headline with no typographic idea, invented customer logos, decoration without a story.',
 ];
 
 /** Compact TODO rendering shared by prompts and status output. */
@@ -74,7 +80,7 @@ export function renderTodos(todos = []) {
  */
 export function buildAgentSystemPrompt({
   inspection = null, spec = null, skillsContext = '', skills = undefined, skillIndex = [], todos = [], mode = 'create',
-  agreedBlock = '', brief = '', loadedSkillIds = [], existingOutline = '',
+  agreedBlock = '', brief = '', loadedSkillIds = [], existingOutline = '', artDirectionBlock = '', skillDigest = '',
 } = {}) {
   const skillBodies = typeof skills === 'string' ? skills : (skills?.contextBlock ?? skillsContext ?? '');
   const lines = [];
@@ -103,12 +109,17 @@ export function buildAgentSystemPrompt({
   }
   if (agreedBlock) lines.push('', agreedBlock);
   if (brief) lines.push('', `BRIEF: ${brief}`);
+  if (artDirectionBlock) {
+    lines.push('', artDirectionBlock, 'This identity is the runtime\'s proposal, derived from the agreed context. Implement it, or deviate deliberately and say why in your done summary — but do not drift back to a neutral default.');
+  }
   if (spec) {
     lines.push('', 'DESIGN SPEC (implement this; do not re-decide it):', typeof spec === 'string' ? spec : renderSpecBlock(spec));
   }
   if (todos.length) lines.push('', 'TODOS (structured — progress them with update_todo):', renderTodos(todos));
   if (skillBodies) {
     lines.push('', `LOADED SKILLS (${loadedSkillIds.length ? loadedSkillIds.join(', ') : 'selected for this task'}) — apply them; they are the expertise this build was planned with:`, skillBodies);
+  } else if (skillDigest) {
+    lines.push('', `SKILLS APPLIED WHEN THIS WAS PLANNED: ${skillDigest}.`, 'Their decisions are already in the spec above. Call read_skill only if you need a detail the spec does not settle.');
   } else if (skillIndex.length) {
     lines.push('', 'SKILL CATALOGUE (read any with read_skill):', ...skillIndex.slice(0, 46).map((s) => `- ${s.id} [${s.category}] ${s.description}`));
   }
@@ -171,14 +182,15 @@ export function buildConversationSystemPrompt({ workspaceDir, inspection, agreed
 
 /* --------------------------------------------------------------- planning ---- */
 
-export function buildPlanPrompt({ brief, inspection, skillsBlock, mode = 'create', existingOutline = '', tech = {}, skillIds = [] }) {
+export function buildPlanPrompt({ brief, inspection, skillsBlock, mode = 'create', existingOutline = '', tech = {}, skillIds = [], artDirectionBlock = '' }) {
   return [
-    'DESIGN SPEC + PLAN — you are the design director and lead engineer for this build. Decide the design before any code is written, then break the work into structured TODOs.',
-    'Reason about: visual hierarchy, composition, typography, spacing/rhythm, contrast, depth/materiality, motion language, interaction, storytelling, focal point, responsive behaviour, performance. Reject generic patterns. Technology serves the design (cheapest tier that achieves it).',
+    'DESIGN SPEC + PLAN — you are the design lead at a studio known for identities that could not be mistaken for anyone else\'s. This client has already rejected templated work. Decide the design before any code is written, then break the work into structured TODOs.',
+    'Reason about: visual hierarchy, composition, typography, spacing/rhythm, contrast, depth/materiality, motion language, interaction, storytelling, focal point, responsive behaviour, performance. Commit to specifics — real font names, real hex values, real clamp() ranges, a named hero composition. Take one justified risk. Reject generic patterns.',
     '',
     'BRIEF:',
     brief.text,
     '',
+    artDirectionBlock ? `${artDirectionBlock}\n(The runtime derived this identity from the agreed context. Adopt it, sharpen it, or replace it deliberately — but the spec you return must be equally specific.)\n` : '',
     `MODE: ${mode === 'refine' ? 'REFINE the existing implementation — change only what the requests need, keep the established language' : 'CREATE from scratch'}`,
     `TECHNOLOGY TIER already chosen: depth=${tech.depth ?? 'css'}, animation=${tech.animation ?? 'vanilla'}${tech.why ? ` (${tech.why})` : ''}`,
     `WORKSPACE: ${inspection?.projectKind ?? 'unknown'} | framework ${inspection?.framework ?? 'none'} | styling ${inspection?.styling ?? 'plain-css'} | ${inspection?.isEmpty ? 'empty folder' : `${inspection?.fileCount ?? 0} files`}`,

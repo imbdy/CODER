@@ -4,8 +4,8 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>Artisan site</title>
-<!-- composed by artisan | skills: anti-slop, frontend-master, visual-design, layout, micro-interactions, typography, responsive-design -->
-<meta name="description" content="Project in one considered place. Clear, fast, and built to be used."/>
+<!-- composed by artisan | skills: anti-slop, frontend-master, project-architecture, visual-design, layout, responsive-design | build: styles/main.css + scripts/main.js -->
+<meta name="description" content="Context in one considered place. Clear, fast, and built to be used."/>
 <link rel="preconnect" href="https://fonts.googleapis.com" />
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Outfit:wght@300..700&family=Fraunces:ital,wght@0,400;0,600;1,400&family=IBM+Plex+Mono:wght@300..700&display=swap" />
@@ -24,12 +24,12 @@
   --color-text: #171512;
   --color-text-muted: #767470;
   --color-text-faint: #9b9894;
-  --color-accent: #3b6df6;
-  --color-accent-hover: #1551f4;
-  --color-accent-quiet: #c1cff6;
-  --color-accent-soft: rgb(59 109 246 / 0.12);
-  --color-accent-readable: #3b6df6;
-  --color-on-accent: #ffffff;
+  --color-accent: #e06a2b;
+  --color-accent-hover: #c3571d;
+  --color-accent-quiet: #e7bda6;
+  --color-accent-soft: rgb(224 106 43 / 0.12);
+  --color-accent-readable: #e06a2b;
+  --color-on-accent: #0b0b0c;
   --color-border: rgb(0 0 0 / 0.1);
   --color-border-strong: rgb(0 0 0 / 0.2);
 
@@ -79,7 +79,7 @@
   --shadow-sm: 0 2px 6px rgb(16 16 20 / 0.08);
   --shadow-md: 0 12px 28px rgb(16 16 20 / 0.10);
   --shadow-lg: 0 28px 60px rgb(16 16 20 / 0.14);
-  --shadow-accentGlow: 0 14px 40px rgb(59 109 246 / 0.22);
+  --shadow-accentGlow: 0 14px 40px rgb(224 106 43 / 0.22);
   --shadow-inset: inset 0 1px 0 rgb(255 255 255 / 0.6);
 
   /* motion */
@@ -843,13 +843,14 @@ button, input, select, textarea { font: inherit; color: inherit; }
 }
 
 </style>
+  <link rel="stylesheet" href="styles/main.css" />
 </head>
 <body>
 <a class="visually-hidden" href="#main">Skip to content</a>
 <main id="main">
 <header class="nav" data-nav>
       <div class="container nav__inner">
-        <a class="nav__brand" href="#top">Project</a>
+        <a class="nav__brand" href="#top">Context</a>
         <button class="nav__toggle" type="button" aria-expanded="false" aria-controls="site-nav" data-nav-toggle>
           <span class="visually-hidden">Toggle navigation</span>
           <span class="nav__toggle-bar" aria-hidden="true"></span>
@@ -869,8 +870,8 @@ button, input, select, textarea { font: inherit; color: inherit; }
       <div class="container hero__inner">
         <div class="stack stack--xs">
           <span class="hero__eyebrow">Care</span>
-          <h1 class="hero__title">Project, thoughtfully</h1>
-          <p class="hero__sub">Project in one considered place. Clear, fast, and built to be used.</p>
+          <h1 class="hero__title">Context, thoughtfully</h1>
+          <p class="hero__sub">Context in one considered place. Clear, fast, and built to be used.</p>
           <div class="hero__actions">
             <a class="btn btn--primary" href="#start"><span class="btn__label">Get started</span></a>
             <a class="btn btn--ghost" href="#how"><span class="btn__label">See how it works</span></a>
@@ -909,9 +910,9 @@ button, input, select, textarea { font: inherit; color: inherit; }
         </div><div class="faq__list"><div class="faq__item"><button class="faq__q" type="button" aria-expanded="false" aria-controls="faq-a-0" data-faq-q>How long does setup take?</button><div class="faq__a" id="faq-a-0" hidden data-faq-a><p>Most teams are working within an hour; nothing requires a migration window.</p></div></div>
 <div class="faq__item"><button class="faq__q" type="button" aria-expanded="false" aria-controls="faq-a-1" data-faq-q>Can I keep my existing stack?</button><div class="faq__a" id="faq-a-1" hidden data-faq-a><p>Yes. It reads what you already have and leaves your tooling in place.</p></div></div>
 <div class="faq__item"><button class="faq__q" type="button" aria-expanded="false" aria-controls="faq-a-2" data-faq-q>What happens to my data if I leave?</button><div class="faq__a" id="faq-a-2" hidden data-faq-a><p>Full export in open formats, on demand, without a support ticket.</p></div></div></div></div></section>
-<section class="section"><div class="container"><div class="cta__panel" data-reveal><div class="stack stack--xs"><h2 class="cta__title">Start with Project</h2><p class="lede">Set it up in minutes. Nothing to install, nothing to babysit.</p></div><a class="btn btn--primary" href="#start"><span class="btn__label">Get started</span></a></div></div></section>
-<footer class="footer"><div class="container"><div class="footer__inner"><span class="footer__brand">Project</span><div class="footer__cols"><div><p class="footer__col-title">Product</p><ul class="footer__links"><li><a href="#">Product</a></li><li><a href="#">How it works</a></li><li><a href="#">Pricing</a></li></ul></div>
-<div><p class="footer__col-title">Company</p><ul class="footer__links"><li><a href="#">About</a></li><li><a href="#">Careers</a></li><li><a href="#">Contact</a></li></ul></div></div></div><p class="footer__note">© 2026 Project. All rights reserved.</p></div></footer>
+<section class="section"><div class="container"><div class="cta__panel" data-reveal><div class="stack stack--xs"><h2 class="cta__title">Start with Context</h2><p class="lede">Set it up in minutes. Nothing to install, nothing to babysit.</p></div><a class="btn btn--primary" href="#start"><span class="btn__label">Get started</span></a></div></div></section>
+<footer class="footer"><div class="container"><div class="footer__inner"><span class="footer__brand">Context</span><div class="footer__cols"><div><p class="footer__col-title">Product</p><ul class="footer__links"><li><a href="#">Product</a></li><li><a href="#">How it works</a></li><li><a href="#">Pricing</a></li></ul></div>
+<div><p class="footer__col-title">Company</p><ul class="footer__links"><li><a href="#">About</a></li><li><a href="#">Careers</a></li><li><a href="#">Contact</a></li></ul></div></div></div><p class="footer__note">© 2026 Context. All rights reserved.</p></div></footer>
 </main>
 <script>
 /* nav, FAQ, auth validation, reveal. */
@@ -955,5 +956,6 @@ button, input, select, textarea { font: inherit; color: inherit; }
 })();
 
 </script>
+  <script type="module" src="scripts/main.js"></script>
 </body>
 </html>

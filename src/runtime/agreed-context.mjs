@@ -41,7 +41,14 @@ export function normalizeAgreedContext(ctx) {
   return c;
 }
 
+/** Field values stay compact: the context is a summary, not a transcript. */
 function clean(value) { return String(value ?? '').replace(/\s+/g, ' ').trim().slice(0, 160); }
+/**
+ * A whole turn must NOT be truncated before it is scanned. Capping the input at
+ * 160 characters made every long brief invisible past its first sentence — the
+ * rejections and the visual direction were simply never seen.
+ */
+function normalizeTurn(value) { return String(value ?? '').replace(/\s+/g, ' ').trim().slice(0, 4000); }
 function uniq(list) {
   const seen = new Set();
   const out = [];
@@ -101,7 +108,7 @@ function objectPhrase(text) {
 
 /** Deterministic extraction for one user turn (offline fallback). */
 export function extractContextHeuristically(ctx, raw) {
-  const text = clean(raw);
+  const text = normalizeTurn(raw);
   const c = normalizeAgreedContext(ctx);
   if (!text || text.startsWith('/')) return c;
   const lower = text.toLowerCase();
@@ -110,16 +117,25 @@ export function extractContextHeuristically(ctx, raw) {
   const patch = {};
   const hasBuild = Boolean(c.build);
 
+  // Clauses let each field capture the phrase that is actually about it, rather
+  // than the first 160 characters of the turn. Negative clauses are excluded
+  // from positive signals so "no dark mode" cannot become a dark direction.
+  const clauses = text.split(/(?<=[.!?])\s+|\s*[;:—–]\s*/).map((s) => s.trim()).filter(Boolean);
+  const NEGATIVE = /\b(no|not|never|without|avoid|don'?t|do not|instead of|rather than)\b/i;
+  const positiveText = clauses.filter((s) => !NEGATIVE.test(s)).join(' ');
+  const positiveLower = positiveText.toLowerCase();
+  const clauseAbout = (re) => clauses.find((s) => re.test(s) && !NEGATIVE.test(s)) ?? '';
+
   if (!c.project) {
     const obj = objectPhrase(text);
     if (obj.project) patch.project = obj.project;
     if (obj.product && !c.product) patch.product = obj.product;
   }
-  if (!c.purpose && text.length > 24 && !/\b(not|don'?t|no)\b/.test(lower)) patch.purpose = text.slice(0, 160);
+  if (!c.purpose && text.length > 24) patch.purpose = clean(clauses[0] ?? text);
   const audience = text.match(/\bfor\s+(developers|designers|founders|teams|students|enterprises|small businesses|marketers|engineers|creators|kids|parents)\b/i);
   if (audience) patch.audience = audience[1];
 
-  const visuals = VISUAL_WORDS.filter((w) => new RegExp(`\\b${w}\\b`).test(lower));
+  const visuals = VISUAL_WORDS.filter((w) => new RegExp(`\\b${w}\\b`).test(positiveLower));
   if (visuals.length) patch.visualDirection = visuals;
 
   const rejected = [];
@@ -135,19 +151,34 @@ export function extractContextHeuristically(ctx, raw) {
   const focus = text.match(/\b(typography|type|hero|motion|performance|simplicity|content|imagery|color|colour|layout|copy|product)\b[^.,;!?]{0,40}\b(?:main |primary |visual )?focus\b/i);
   if (focus) { patch.accepted = [`${focus[1].toLowerCase()} as the main focus`]; if (/typograph|type/.test(focus[1].toLowerCase())) patch.typography = 'typography is the primary visual element'; }
 
-  if (/\b(typograph|font|serif|sans|tracking|headline|display type)\b/.test(lower) && !patch.typography) patch.typography = text.slice(0, 160);
-  if (/\b(colou?r|palette|accent|gradient|neon|monochrome|dark mode|light mode)\b/.test(lower)) patch.color = text.slice(0, 160);
-  if (/\b(motion|animat|scroll-driven|scroll|transition|parallax|scrub|micro-?interaction)\b/.test(lower)) patch.motion = text.slice(0, 160);
-  if (/\b(3d|three\.?js|webgl|depth|spatial|immersive)\b/.test(lower)) patch.depth3d = text.slice(0, 160);
-  if (/\b(hero)\b/.test(lower) && !/(overload|crowd)/.test(lower)) patch.hero = text.slice(0, 160);
-  if (/\b(layout|grid|composition|asymmetr|bento|split|columns?)\b/.test(lower)) patch.layout = text.slice(0, 160);
-  if (/\b(hover|cursor|click|drag|interactive|interaction)\b/.test(lower)) patch.interaction = text.slice(0, 160);
+  const fields = [
+    ['typography', /\b(typograph|font|serif|sans|tracking|headline|display size|display type|monospaced|mono)\b/i],
+    ['color', /\b(colou?r|palette|accent|gradient|neon|monochrome|background|dark mode|light mode|printed)\b/i],
+    ['motion', /\b(motion|animat|scroll|transition|parallax|scrub|micro-?interaction|hover)\b/i],
+    ['depth3d', /\b(3d|three\.?js|webgl|depth|spatial|immersive|dimensional)\b/i],
+    ['hero', /\b(hero|above the fold|first screen|open(s|ing)? with)\b/i],
+    ['layout', /\b(layout|grid|composition|asymmetr|bento|split|columns?|structure|rules?|section)\b/i],
+    ['interaction', /\b(hover|cursor|click|drag|interactive|interaction)\b/i],
+  ];
+  for (const [field, re] of fields) {
+    if (patch[field]) continue;
+    const clause = clauseAbout(re);
+    if (clause) patch[field] = clean(clause);
+  }
+  if (/\b(hero)\b/.test(lower) && /(overload|crowd)/.test(lower)) delete patch.hero;
   const tech = ['react', 'next', 'nextjs', 'vue', 'svelte', 'astro', 'tailwind', 'gsap', 'three', 'three.js', 'r3f', 'lenis', 'framer', 'vanilla', 'plain html', 'static'].filter((w) => new RegExp(`\\b${w.replace('.', '\\.')}\\b`).test(lower));
   if (tech.length) patch.tech = tech;
   if (/\b(yes|yeah|exactly|perfect|love (it|that)|great|sounds good|like that|keep|go with)\b/.test(lower) && text.length < 200 && !TRIGGER_RE.test(text)) patch.accepted = [...(patch.accepted ?? []), text.slice(0, 120)];
   if (/\b(what if|maybe|could we|how about|perhaps)\b/.test(lower)) patch.notes = [`idea floated: ${text.slice(0, 120)}`];
 
-  if (hasBuild && !/^(what|why|how|which|is|are|can|does|do)\b/.test(lower) && (/\b(make|add|change|update|remove|replace|tweak|adjust|move|swap|increase|decrease|more|less|bigger|smaller|darker|lighter|rework|redo|improve|refine|polish)\b/.test(lower))) {
+  // Once a build exists, a judgement about it IS a change request. Requiring an
+  // imperative verb meant "the spec table reads like an afterthought" and "the
+  // hero is too tall" left nothing pending, so the next "Do it." was refused
+  // with "the current build already reflects everything we agreed" — the agent
+  // heard the criticism, agreed with it, and then denied it had been made.
+  const ASKED = /\b(make|add|change|update|remove|replace|tweak|adjust|move|swap|increase|decrease|more|less|bigger|smaller|darker|lighter|rework|redo|improve|refine|polish)\b/;
+  const JUDGED = /\b(too (?:tall|short|small|big|large|wide|narrow|quiet|loud|dark|light|busy|plain|much|many|little|thin|heavy|slow|fast|close|far)|not (?:enough|clear|readable|obvious|strong|working)|isn'?t (?:clear|readable|working|right|enough)|feels? (?:off|flat|generic|cramped|empty|cheap|dated|bland|quiet|loud|thin|rushed)|reads? like|looks? (?:off|flat|generic|cheap|dated|bland|broken|wrong)|afterthought|gets? lost|buried|hard to read|cluttered|overwhelming|underwhelming|boring|bland|lifeless|weak|awkward|should (?:be|have|carry|feel|sit|lead|come|go)|needs? (?:to|more|less|a|some)|wish|would (?:rather|prefer)|prefer)\b/;
+  if (hasBuild && !/^(what|why|how|which|is|are|can|does|do)\b/.test(lower) && (ASKED.test(lower) || JUDGED.test(lower))) {
     patch.changeRequests = [text.slice(0, 160)];
   }
   return mergeContextPatch(c, patch, { source: 'heuristic', turnText: text });
@@ -232,17 +263,28 @@ export function directivesFromContext(ctx) {
   return {
     product: c.product || c.project,
     purpose: c.summary || c.purpose || c.project,
+    // Carries the established identity so a refinement keeps it.
+    artDirection: c.build?.artDirection,
     visual: [...c.visualDirection],
-    avoid: uniq([...c.rejected, ...c.constraints]),
-    emphasis: uniq([c.typography, c.hero, ...c.accepted, c.motion, c.depth3d, c.composition, c.color, c.layout, c.interaction].filter(Boolean)),
+    // avoid = things the user ruled OUT. Constraints ("flawless at 390px",
+    // "load fast") are requirements to HONOR: folding them in here told the
+    // spec to avoid being responsive.
+    avoid: uniq([...c.rejected]),
+    emphasis: uniq([c.typography, c.hero, ...c.accepted, ...c.constraints, c.motion, c.depth3d, c.composition, c.color, c.layout, c.interaction].filter(Boolean)),
+    constraints: uniq([...c.constraints]),
   };
 }
 
-export function recordBuild(ctx, { files = [], summary = '', spec, skills = [], qaScore, mode = 'create', status = 'done' } = {}) {
+export function recordBuild(ctx, { files = [], summary = '', spec, skills = [], qaScore, mode = 'create', status = 'done', artDirection, sections = [] } = {}) {
   const c = normalizeAgreedContext(ctx);
   const previousFiles = c.build?.files ?? [];
   c.build = {
     at: new Date().toISOString(),
+    // The identity is decided once and then belongs to the project.
+    artDirection: c.build?.artDirection ?? artDirection,
+    // So does the section plan: the create pass read the brief's own
+    // enumeration, and a refinement must not quietly re-add what it dropped.
+    sections: (c.build?.sections?.length ? c.build.sections : sections).filter(Boolean).slice(0, 20),
     files: uniq([...previousFiles, ...files]).slice(-40),
     summary: clean(summary).slice(0, 200),
     specSummary: spec?.design ? clean([spec.design.visual_direction, spec.design.hero_concept].filter(Boolean).join(' / ')).slice(0, 240) : c.build?.specSummary,

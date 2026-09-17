@@ -20,6 +20,8 @@ import { renderPage, describeRender, browserAvailability, DEFAULT_VIEWPORTS } fr
 import { verifyStatic } from './static.mjs';
 import { antiGenericCheck } from './quality-gate.mjs';
 import { extractJson } from '../model/json.mjs';
+import { ensureContrast } from '../design/color.mjs';
+import { checkRequirements, copyFindings } from './requirements.mjs';
 
 const SEVERITY_WEIGHT = { blocker: 25, major: 10, minor: 4 };
 
@@ -80,7 +82,8 @@ export function findingsFromRender(render, { spec, agreed, minBodyFont = 14 } = 
   if (mfv.hasHeading === false) out.push(finding('responsive', 'major', 'mobile first viewport has no heading', 'Re-think the hero for 390px: headline first, supporting line, one action.'));
   const rm = desktop?.reducedMotion;
   if (rm && (rm.invisibleTextBlocks ?? 0) > 0) out.push(finding('motion', 'major', `${rm.invisibleTextBlocks} text block(s) stay invisible under prefers-reduced-motion`, 'Reveal animations must fall back to visible content when motion is reduced.'));
-  if (m.motion && m.motion.reducedMotionRule === false && ((m.motion.animatedElements ?? 0) + (m.motion.transitionElements ?? 0)) > 0) out.push(finding('motion', 'minor', 'motion present but no prefers-reduced-motion rule', 'Add a reduced-motion media query that disables animation and shows content.'));
+  // Accessibility, not polish: motion without an opt-out is a defect.
+  if (m.motion && m.motion.reducedMotionRule === false && ((m.motion.animatedElements ?? 0) + (m.motion.transitionElements ?? 0)) > 0) out.push(finding('motion', 'major', `${(m.motion.animatedElements ?? 0) + (m.motion.transitionElements ?? 0)} element(s) animate or transition and there is no prefers-reduced-motion rule`, 'Add @media (prefers-reduced-motion: reduce) that disables animation and transitions and leaves every element visible.'));
   if ((m.motion?.hiddenRevealElements ?? 0) > 0) out.push(finding('motion', 'major', `${m.motion.hiddenRevealElements} reveal element(s) still hidden after scrolling through the page`, 'The reveal observer is not firing (or the class is wrong); content must never stay invisible.'));
 
   // --- a11y
@@ -127,7 +130,7 @@ export function scoreFindings(findings, { base = 100 } = {}) {
 
 /* --------------------------------------------------------- model critique ---- */
 
-function critiquePrompt({ spec, agreed, render, findings, round, mode, vision }) {
+function critiquePrompt({ spec, agreed, render, findings, round, mode, vision, requirements = [], coverage }) {
   const lines = [
     'VISUAL QA CRITIQUE — you are the design director reviewing a rendered page before it ships.',
     vision ? 'You are looking at real screenshots of the page (desktop top, desktop full page, mobile). Judge what you SEE.' : 'You cannot see the screenshots; judge from the measured render digest below and say so in your notes.',
@@ -142,11 +145,19 @@ function critiquePrompt({ spec, agreed, render, findings, round, mode, vision })
     const block = renderAgreedForCritique(agreed);
     if (block) lines.push('', 'AGREED WITH THE USER (must hold):', block);
   }
+  if (requirements.length) {
+    lines.push('', 'THE BRIEF EXPLICITLY ASKED FOR:', ...requirements.map((r) => `- ${r.label}${coverage?.missing?.includes(r.id) ? '  <-- NOT PRESENT in the render' : '  (present)'}`));
+  }
   lines.push('', 'MEASURED RENDER:', describeRender(render));
+  const copy = render.viewports?.[0]?.metrics?.copy;
+  if (copy) {
+    lines.push('', `COPY ON THE PAGE: h1 "${copy.h1Text ?? ''}", ${copy.words ?? '?'} words, actions: ${(copy.ctaLabels ?? []).map((c) => `"${c}"`).join(', ') || 'none'}`);
+    lines.push('Apply the specificity test to every line you can see: if a competitor in the same market could paste it onto their own page unchanged, it is filler and must be rewritten to name the mechanism. "Precision Scanning for Film Archives" fails. "Reads a 35mm frame in 4 seconds without touching the emulsion" passes.');
+  }
   if (findings.length) lines.push('', 'DETERMINISTIC FINDINGS (already counted):', ...findings.map((f) => `- [${f.severity}] ${f.area}: ${f.evidence}`));
   lines.push(
     '',
-    'Evaluate: hierarchy, composition, spacing/rhythm, typography, colour, depth, focal point, motion (from metrics), responsiveness, generic/template feel, unfinished areas, unnecessary elements, agreement with the spec and with what the user asked for.',
+    'Evaluate: hierarchy, composition, spacing/rhythm, typography, colour, depth, focal point, motion (from metrics), responsiveness, generic/template feel, unfinished areas, unnecessary elements, copy specificity, whether every part of the brief was actually delivered, and agreement with the spec.',
     'Reply with STRICT JSON only:',
     '{"score": 0-100, "verdict": "pass"|"iterate", "summary": "one sentence", "strengths": ["..."], "weaknesses": [{"area": "hierarchy|composition|spacing|typography|color|depth|motion|responsive|content|generic|accessibility", "severity": "blocker|major|minor", "evidence": "what you observed", "fix": "concrete change to make"}]}',
     'Verdict "pass" only when the page would impress a demanding client as intentional and finished. List at most 6 weaknesses, most important first.',
@@ -185,17 +196,17 @@ function imagesFor(render) {
   return list;
 }
 
-export async function critiqueWithModel({ router, spec, agreed, render, findings, round = 1, mode = 'create' }) {
+export async function critiqueWithModel({ router, spec, agreed, render, findings, round = 1, mode = 'create', requirements = [], coverage }) {
   if (!router) return undefined;
   let live = false;
   try { live = await router.hasLiveModel(); } catch { live = false; }
   if (!live) return undefined;
   const wantsVision = router.supportsVision ? await router.supportsVision() : false;
   const images = wantsVision ? imagesFor(render) : [];
-  const prompt = critiquePrompt({ spec, agreed, render, findings, round, mode, vision: images.length > 0 });
+  const prompt = critiquePrompt({ spec, agreed, render, findings, round, mode, vision: images.length > 0, requirements, coverage });
   try {
     const response = await router.text(prompt, {
-      kind: 'critique', phase: 'visual-qa', liveOnly: true, maxTokens: 900, temperature: 0.2,
+      kind: 'critique', phase: 'visual-qa', liveOnly: true, maxTokens: 700, temperature: 0.2,
       system: 'You are a ruthless, precise design director. Reply with STRICT JSON only — no prose outside the JSON.',
       images,
     });
@@ -225,7 +236,7 @@ export async function critiqueWithModel({ router, spec, agreed, render, findings
  * Run one visual QA round.
  * @returns {Promise<{rendered: boolean, method: string, score: number, verdict: 'pass'|'iterate', findings: object[], screenshots: string[], render?: object, critique?: object, digest: string, reason?: string}>}
  */
-export async function runVisualQa({ workspaceDir, entry = 'index.html', config = {}, spec, agreed, router, bus, outDir, round = 1, mode = 'create', html = '', css = '', viewports } = {}) {
+export async function runVisualQa({ workspaceDir, entry = 'index.html', config = {}, spec, agreed, router, bus, outDir, round = 1, mode = 'create', html = '', css = '', viewports, requirements = [] } = {}) {
   const started = Date.now();
   const minScore = Number(config?.verification?.minQualityScore ?? 78);
   const availability = browserAvailability(config);
@@ -244,8 +255,13 @@ export async function runVisualQa({ workspaceDir, entry = 'index.html', config =
   let method = 'static-only';
   let digest = '';
   const screenshots = [];
+  let coverage = { met: [], missing: [] };
   if (render.ok) {
     findings = findingsFromRender(render, { spec, agreed });
+    // Did the build deliver what the brief asked for, and is the copy specific?
+    const required = checkRequirements(render, requirements);
+    coverage = { met: required.met, missing: required.missing };
+    findings = dedupeFindings([...findings, ...required.findings, ...copyFindings(render)]);
     method = 'browser+heuristics';
     digest = describeRender(render);
     for (const vp of render.viewports) { if (vp.screenshot) screenshots.push(vp.screenshot); if (vp.fullScreenshot) screenshots.push(vp.fullScreenshot); }
@@ -261,7 +277,7 @@ export async function runVisualQa({ workspaceDir, entry = 'index.html', config =
 
   let critique;
   if (router && render.ok) {
-    critique = await critiqueWithModel({ router, spec, agreed, render, findings, round, mode });
+    critique = await critiqueWithModel({ router, spec, agreed, render, findings, round, mode, requirements, coverage });
     if (critique?.ok) {
       method = critique.vision ? 'browser+vision-critique' : 'browser+metrics-critique';
       findings = dedupeFindings([...findings, ...critique.weaknesses]);
@@ -276,13 +292,82 @@ export async function runVisualQa({ workspaceDir, entry = 'index.html', config =
   if (blockers.length || blended < minScore) verdict = 'iterate';
   if (critique?.ok && critique.verdict === 'iterate' && (majors.length || blockers.length || (critique.score ?? 100) < minScore)) verdict = 'iterate';
   if (!render.ok && !blockers.length) verdict = majors.length ? 'iterate' : 'pass';
+  // A page that scores well but is missing something the brief asked for is not
+  // finished. This is the difference between "technically correct" and "done".
+  if (coverage.missing.length) verdict = 'iterate';
   const result = {
     rendered: Boolean(render.ok), method, browser: render.browser, reason: render.ok ? undefined : render.reason,
-    score: blended, heuristicScore, minScore, verdict, findings, screenshots, digest, critique, round, ms: Date.now() - started,
+    score: blended, heuristicScore, minScore, verdict, findings, screenshots, digest, critique, round, coverage, ms: Date.now() - started,
     render: render.ok ? { url: render.url, outDir: render.outDir, viewports: render.viewports.map((v) => ({ name: v.name, width: v.width, height: v.height, screenshot: v.screenshot, fullScreenshot: v.fullScreenshot, overflow: v.metrics?.viewport?.horizontalOverflow ?? null })), console: render.console, failedRequests: render.failedRequests } : undefined,
+    // Full measured render (with per-viewport metrics). In-process only — callers
+    // that persist a run must not copy this into the record.
+    rawRender: render.ok ? render : undefined,
   };
   bus?.emit('critique.result', { kind: 'visual-qa', overall: blended, verdict, rendered: result.rendered, method, findings: findings.length, round });
   return result;
+}
+
+/**
+ * Mechanical repairs derived from the MEASURED render (not from finding text).
+ *
+ * The deterministic engine has no model to re-think a design, but a measured
+ * defect — an element wider than the viewport, text below 4.5:1, a reveal stuck
+ * at opacity 0 — has one correct mechanical fix. Everything here targets the
+ * exact selector the browser reported.
+ *
+ * @returns {{css: string, fixes: string[]}}
+ */
+export function deterministicRepairCss(render, { minBodyFont = 14 } = {}) {
+  if (!render?.ok) return { css: '', fixes: [] };
+  const rules = [];
+  const fixes = [];
+  const seen = new Set();
+  const push = (selector, body, why) => {
+    const key = `${selector}|${body}`;
+    if (!selector || seen.has(key)) return;
+    seen.add(key);
+    rules.push(`${selector} { ${body} }`);
+    fixes.push(why);
+  };
+  const safeSelector = (value) => {
+    const text = String(value ?? '').trim();
+    // describe() emits tag#id.class.class — reject anything else.
+    return /^[a-z][a-z0-9]*(#[A-Za-z0-9_-]+)?(\.[A-Za-z0-9_-]+)*$/i.test(text) ? text : '';
+  };
+
+  for (const vp of render.viewports ?? []) {
+    const m = vp.metrics ?? {};
+    if (m.viewport?.horizontalOverflow) {
+      for (const entry of (m.overflowingElements ?? []).slice(0, 5)) {
+        const selector = safeSelector(entry.el);
+        if (selector) push(selector, 'max-width: 100% !important; width: auto !important; overflow-wrap: anywhere;', `${vp.name}: constrained ${selector} which overflowed to ${entry.right}px`);
+      }
+      push('html, body', 'max-width: 100%;', `${vp.name}: clamped the document width`);
+    }
+    for (const failure of (m.contrast?.failures ?? []).slice(0, 8)) {
+      const selector = safeSelector(failure.el);
+      if (!selector || !/^#[0-9a-f]{6}$/i.test(failure.fg ?? '') || !/^#[0-9a-f]{6}$/i.test(failure.bg ?? '')) continue;
+      const raised = ensureContrast(failure.fg, failure.bg, failure.needed >= 4.5 ? 4.6 : 3.1);
+      push(selector, `color: ${raised} !important;`, `raised ${selector} from ${failure.ratio}:1 to >= ${failure.needed}:1 (${failure.fg} -> ${raised})`);
+    }
+    if ((m.motion?.hiddenRevealElements ?? 0) > 0) {
+      push('[data-reveal]', 'opacity: 1 !important; transform: none !important;', `revealed ${m.motion.hiddenRevealElements} element(s) the observer left hidden`);
+    }
+    if (m.text?.bodyFontPx && m.text.bodyFontPx < minBodyFont) {
+      push('body', 'font-size: 1rem;', `raised body text from ${m.text.bodyFontPx}px to 16px`);
+    }
+    if ((m.text?.maxParagraphWidthCh ?? 0) > 85) {
+      push('p', 'max-width: 68ch;', `capped prose measure at 68ch (was ~${m.text.maxParagraphWidthCh}ch)`);
+    }
+    if (vp.name === 'mobile' && (m.interactive?.smallTapTargets ?? 0) >= 3) {
+      push('a[class*="cta"], a[class*="btn"], button', 'min-height: 44px; display: inline-flex; align-items: center;', `gave ${m.interactive.smallTapTargets} small tap target(s) a 44px hit area`);
+    }
+  }
+  if (!rules.length) return { css: '', fixes: [] };
+  return {
+    css: `\n/* ============================================================\n   Visual QA repair pass — generated from measured browser output.\n   ${fixes.map((f) => `- ${f}`).join('\n   ')}\n   ============================================================ */\n${rules.join('\n')}\n`,
+    fixes,
+  };
 }
 
 /** Findings → the message the implementation loop hands back to the model. */

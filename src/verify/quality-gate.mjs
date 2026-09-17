@@ -18,7 +18,7 @@ export function antiGenericCheck({ html = '', css = '', plan } = {}) {
   if (/linear-gradient\([^)]*#8b5cf6[^)]*#3b82f6|#a855f7.*#6366f1/i.test(css)) flags.push('generic purple/blue AI gradient');
   const accentUses = (css.match(/var\(--color-accent\)/g) ?? []).length;
   if (accentUses > 24) flags.push(`accent used ${accentUses}x — signal, not wallpaper`);
-  if (!/<h1[\s\S]{0,600}?(display|serif|tracking|balance|hero__title|section__title|auth__title|demo__title|var\(--font-display\))/i.test(`${html} ${css}`) && text.length > 200) flags.push('typography carries no art direction (no display treatment)');
+  if (!/<h1[\s\S]{0,600}?(display|serif|tracking|balance|hero__title|hero-ad__title|ad-display-weight|section__title|auth__title|demo__title|var\(--font-display\))/i.test(`${html} ${css}`) && text.length > 200) flags.push('typography carries no art direction (no display treatment)');
   for (const g of GENERIC) if (g.re.test(html + css)) flags.push(g.msg);
   const score = Math.max(0, 100 - flags.length * 14);
   return { pass: flags.length === 0, flags, score };

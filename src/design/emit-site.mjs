@@ -8,6 +8,44 @@
  */
 
 import { googleFontsHref } from './css-vars.mjs';
+import { renderArtHero, fontsHrefFor, emitRevealJs, emitCanvasJs } from './art-direction.mjs';
+
+/** Nav, FAQ and form behaviour — shared by both paths, never hides content. */
+function behaviourJs() {
+  return `
+  // ---- behaviour: nav, disclosure, form validation ----
+  (() => {
+    const nav = document.querySelector("[data-nav]");
+    const toggle = document.querySelector("[data-nav-toggle]");
+    const links = document.querySelector(".nav__links");
+    if (toggle && links) toggle.addEventListener("click", () => {
+      const open = toggle.getAttribute("aria-expanded") === "true";
+      toggle.setAttribute("aria-expanded", String(!open));
+      links.style.display = open ? "" : "flex";
+    });
+    const onScroll = () => { if (nav) nav.setAttribute("data-scrolled", String(window.scrollY > 8)); };
+    window.addEventListener("scroll", onScroll, { passive: true }); onScroll();
+    document.querySelectorAll("[data-faq-q]").forEach((q) => q.addEventListener("click", () => {
+      const open = q.getAttribute("aria-expanded") === "true";
+      q.setAttribute("aria-expanded", String(!open));
+      const panel = q.parentElement && q.parentElement.querySelector("[data-faq-a]");
+      if (panel) panel.hidden = open;
+    }));
+    const form = document.querySelector("[data-auth-form]");
+    if (form) form.addEventListener("submit", (e) => {
+      let firstBad;
+      form.querySelectorAll(".field").forEach((field) => {
+        const input = field.querySelector("input");
+        if (!input) return;
+        const bad = !input.checkValidity();
+        field.dataset.invalid = bad ? "true" : "false";
+        input.setAttribute("aria-invalid", String(bad));
+        if (bad && !firstBad) firstBad = input;
+      });
+      if (firstBad) { e.preventDefault(); firstBad.focus(); }
+    });
+  })();`;
+}
 
 const escapeHtml = (value) => String(value ?? '')
   .replace(/&/g, '&amp;')
@@ -148,6 +186,17 @@ export function renderProcess(content) {
   const steps = (content.steps ?? []).map((s, i) => `<li class="process__step" data-reveal><span class="tag">0${i + 1}</span><h3>${escapeHtml(s.title)}</h3><p>${escapeHtml(s.body)}</p></li>`).join('\n');
   return `<section class="section"><div class="container">${sectionHead(content)}<ol class="process">${steps}</ol></div></section>`;
 }
+/**
+ * A specification table, as a real table: a caption, row headers and figures in
+ * a monospaced column. The brief asks for a specification and means a document
+ * you can read down, not three cards with a number on each.
+ */
+export function renderSpec(content) {
+  const rows = (content.rows ?? []).map((row) =>
+    `<tr><th scope="row">${escapeHtml(row.label)}</th><td>${escapeHtml(row.value)}</td></tr>`).join('');
+  const caption = content.caption ? `<caption>${escapeHtml(content.caption)}</caption>` : '';
+  return `<section class="section" id="specification"><div class="container">${sectionHead(content)}<div class="spec-wrap" data-reveal><table class="spec">${caption}<tbody>${rows}</tbody></table></div></div></section>`;
+}
 export function renderPricing(content) {
   const tiers = (content.tiers ?? []).map((t) => `<article class="tier${t.featured ? ' tier--featured' : ''}"><p class="tier__name">${escapeHtml(t.name)}</p><p class="tier__price">${escapeHtml(t.currency ?? '')} ${escapeHtml(t.price)}</p><p class="tier__cadence">${escapeHtml(t.cadence ?? '')}</p><ul class="tier__features">${(t.features ?? []).map((f) => `<li>${escapeHtml(f)}</li>`).join('')}</ul>${button({ label: 'Choose ' + t.name, href: '#start', variant: t.featured ? 'primary' : 'ghost' })}</article>`).join('\n');
   return `<section class="section" id="pricing"><div class="container">${sectionHead(content)}<div class="tiers">${tiers}</div></div></section>`;
@@ -213,11 +262,15 @@ export function renderSection(section, ctx = {}) {
   const dir = ctx.direction;
   switch (section.type) {
     case 'nav': return renderNav(section.content, ctx);
-    case 'hero': return renderHero(section.content, { request: req, direction: dir });
+    // With an art direction the hero is composed by the taste layer (never a centered stack).
+    case 'hero': return ctx.artDirection
+      ? renderArtHero(section.content, ctx.artDirection, ctx.decoration)
+      : renderHero(section.content, { request: req, direction: dir });
     case 'proof': return renderProof(section.content);
     case 'features': return renderFeatures(section.content, section.layout);
     case 'showcase': return renderShowcase(section.content);
     case 'process': return renderProcess(section.content);
+    case 'spec': return renderSpec(section.content);
     case 'pricing': return renderPricing(section.content);
     case 'testimonials': return renderTestimonials(section.content);
     case 'faq': return renderFaq(section.content);
@@ -234,8 +287,13 @@ function isPremiumJs(request = '', direction) {
   if (direction?.id === 'aurora-depth') return true;
   return /\b(3d|three\.?js|webgl|depth|immersive|scroll|pin|scrub|parallax|horizontal|gsap|cinematic|storytelling|glassmorphism)\b/i.test(hay);
 }
-export function emitSiteJs({ request = '', direction } = {}) {
+export function emitSiteJs({ request = '', direction, artDirection, decoration } = {}) {
   const premium = isPremiumJs(request, direction);
+  // Art direction path: behaviour + one staggered reveal ladder + the earned canvas.
+  // No orb parallax, no GSAP scaffolding, nothing that hides content on failure.
+  if (artDirection) {
+    return `${behaviourJs()}${emitRevealJs()}${decoration?.canvas ? emitCanvasJs(artDirection) : ''}\n`;
+  }
   const base = '/* nav, FAQ, auth validation, reveal. */\n(() => {\n  const nav = document.querySelector("[data-nav]");\n  const toggle = document.querySelector("[data-nav-toggle]");\n  const links = document.querySelector(".nav__links");\n  if (toggle && links) toggle.addEventListener("click", () => {\n    const open = toggle.getAttribute("aria-expanded") === "true";\n    toggle.setAttribute("aria-expanded", String(!open));\n    links.style.display = open ? "" : "flex";\n  });\n  const onScroll = () => { if (nav) nav.setAttribute("data-scrolled", String(window.scrollY > 8)); };\n  window.addEventListener("scroll", onScroll, { passive: true }); onScroll();\n  document.querySelectorAll("[data-faq-q]").forEach((q) => q.addEventListener("click", () => {\n    const open = q.getAttribute("aria-expanded") === "true";\n    q.setAttribute("aria-expanded", String(!open));\n    const panel = q.parentElement && q.parentElement.querySelector("[data-faq-a]");\n    if (panel) panel.hidden = open;\n  }));\n  const form = document.querySelector("[data-auth-form]");\n  if (form) form.addEventListener("submit", (e) => {\n    let firstBad;\n    form.querySelectorAll(".field").forEach((field) => {\n      const input = field.querySelector("input");\n      if (!input) return;\n      const bad = !input.checkValidity();\n      field.dataset.invalid = bad ? "true" : "false";\n      input.setAttribute("aria-invalid", String(bad));\n      if (bad && !firstBad) firstBad = input;\n    });\n    if (firstBad) { e.preventDefault(); firstBad.focus(); }\n  });\n  const reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches;\n  if (!reduce && "IntersectionObserver" in window) {\n    const io = new IntersectionObserver((entries) => entries.forEach((en) => {\n      if (en.isIntersecting) { en.target.classList.add("enter"); io.unobserve(en.target); }\n    }), { threshold: 0.12 });\n    document.querySelectorAll("[data-reveal]").forEach((el) => io.observe(el));\n  } else { document.querySelectorAll("[data-reveal]").forEach((el) => el.classList.add("enter")); }\n';
   if (!premium) return base + '})();\n';
   // Premium 3D + scroll storytelling — progressive enhancement, respects reduced-motion, mobile fallback
@@ -386,14 +444,19 @@ export function emitSiteJs({ request = '', direction } = {}) {
   `;
   return base + premiumJs + '\n})();\n';
 }
-export function emitPage({ tokens, plan, css, title = 'Artisan site', request = '', direction } = {}) {
-  const fontsHref = googleFontsHref(tokens);
+export function emitPage({ tokens, plan, css, title = 'Artisan site', request = '', direction, artDirection, decoration } = {}) {
+  const fontsHref = artDirection ? fontsHrefFor(artDirection) : googleFontsHref(tokens);
   const brand = plan.sections.find((x) => x.type === 'nav')?.content?.brand ?? 'Artisan';
-  const body = (plan.sections ?? []).map((s) => renderSection(s, { brand, request, direction })).join('\n');
+  const body = (plan.sections ?? []).map((s) => renderSection(s, { brand, request, direction, artDirection, decoration })).join('\n');
   const desc = plan.sections.find((s) => s.type === 'hero')?.content?.subhead ?? 'A considered interface.';
   const links = fontsHref ? '<link rel="preconnect" href="https://fonts.googleapis.com" />\n<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />\n<link rel="stylesheet" href="' + fontsHref + '" />\n' : '';
-  const premium = isPremiumJs(request, direction);
-  const importMaps = premium ? '<script type="importmap">{"imports":{"three":"https://unpkg.com/three@0.160.0/build/three.module.js","three/addons/":"https://unpkg.com/three@0.160.0/examples/jsm/"}}</' + 'script>\n<script src="https://cdn.jsdelivr.net/npm/gsap@3.12.5/dist/gsap.min.js"></' + 'script>\n<script src="https://cdn.jsdelivr.net/npm/gsap@3.12.5/dist/ScrollTrigger.min.js"></' + 'script>\n' : '';
   const close = '</' + 'script>';
-  return '<!doctype html>\n<html lang="en">\n<head>\n<meta charset="utf-8" />\n<meta name="viewport" content="width=device-width, initial-scale=1" />\n<title>' + escapeHtml(title) + '</title>\n<meta name="description" content="' + escapeHtml(desc) + '"/>\n' + links + importMaps + '<style>\n' + css + '\n</style>\n</head>\n<body>\n<a class="visually-hidden" href="#main">Skip to content</a>\n<main id="main">\n' + body + '\n</main>\n<script>\n' + emitSiteJs({ request, direction }) + '\n' + close + '\n</body>\n</html>\n';
+  // Fail-safe reveal flag: CSS only hides [data-reveal] when this runs, so a broken
+  // script can never leave the page blank.
+  const jsFlag = '<script>document.documentElement.dataset.js="1";</' + 'script>\n';
+  const needsThree = artDirection ? Boolean(decoration?.canvas) : isPremiumJs(request, direction);
+  const threeMap = '<script type="importmap">{"imports":{"three":"https://unpkg.com/three@0.160.0/build/three.module.js","three/addons/":"https://unpkg.com/three@0.160.0/examples/jsm/"}}</' + 'script>\n';
+  const gsap = '<script src="https://cdn.jsdelivr.net/npm/gsap@3.12.5/dist/gsap.min.js"></' + 'script>\n<script src="https://cdn.jsdelivr.net/npm/gsap@3.12.5/dist/ScrollTrigger.min.js"></' + 'script>\n';
+  const importMaps = artDirection ? (needsThree ? threeMap : '') : (needsThree ? threeMap + gsap : '');
+  return '<!doctype html>\n<html lang="en">\n<head>\n<meta charset="utf-8" />\n<meta name="viewport" content="width=device-width, initial-scale=1" />\n<title>' + escapeHtml(title) + '</title>\n<meta name="description" content="' + escapeHtml(desc) + '"/>\n' + jsFlag + links + importMaps + '<style>\n' + css + '\n</style>\n</head>\n<body>\n<a class="visually-hidden" href="#main">Skip to content</a>\n<main id="main">\n' + body + '\n</main>\n<script type="module">\n' + emitSiteJs({ request, direction, artDirection, decoration }) + '\n' + close + '\n</body>\n</html>\n';
 }

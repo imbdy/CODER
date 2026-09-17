@@ -16,8 +16,20 @@ import { estimateTokens } from '../core/util.mjs';
 const TECH_DEPTHS = new Set(['css', 'threejs', 'r3f', 'shader']);
 const TECH_ANIMATION = new Set(['css', 'vanilla', 'gsap']);
 
-export function catalogueLines(registry) {
-  return registry.list().map((skill) => `- ${skill.id} [${skill.category}] ${String(skill.description).slice(0, 110)}`);
+/**
+ * The catalogue the model chooses from. All 57 lines cost ~1.7k tokens, which is
+ * most of a minute on a metered tier, so `limit` narrows it to the strongest
+ * candidates (scored by the retriever) plus everything the runtime will require
+ * anyway — the model still chooses, from a shortlist rather than the shelf.
+ */
+export function catalogueLines(registry, { limit, keep = [], request = '', taskType = 'create-page', workspace = {}, config = {}, logger } = {}) {
+  const all = registry.list();
+  const line = (skill) => `- ${skill.id} [${skill.category}] ${String(skill.description).slice(0, 110)}`;
+  if (!limit || all.length <= limit) return all.map(line);
+  const scored = createRetriever({ registry, config, logger }).retrieve({ request, taskType, workspace, maxSkills: limit, budgetTokens: Number.MAX_SAFE_INTEGER });
+  const shortlist = new Set([...keep, ...scored.ids, ...scored.excluded.map((e) => e.id)]);
+  const picked = all.filter((skill) => shortlist.has(skill.id)).slice(0, limit);
+  return (picked.length ? picked : all.slice(0, limit)).map(line);
 }
 
 /** Skills the runtime insists on for a given technology / brief, filtered to what exists. */
@@ -27,8 +39,19 @@ export function requiredSkillsFor({ tech = {}, inspection = {}, brief = {}, regi
   const isReact = /react|next/.test(framework);
   const depth = String(tech.depth ?? 'css');
   const animation = String(tech.animation ?? 'css');
-  if (complexity !== 'trivial') { need.add('anti-slop'); need.add('visual-design'); }
-  if (complexity === 'complex') { need.add('typography'); need.add('layout'); }
+  const text = `${brief?.text ?? ''}`.toLowerCase();
+  const pageLike = /landing|page|site|home|marketing|portfolio|hero/.test(text) || ['create-page', 'create-app', 'redesign'].includes(brief?.taskType);
+  // The mandatory set is deliberately small: the four decisions no build may
+  // skip (identity, palette, type pairing, anti-generic) plus the ones the task
+  // shape demands. Everything else is a candidate the model picks or phase
+  // retrieval adds — piling sixteen "required" skills on is a dump, not taste.
+  if (complexity !== 'trivial') {
+    need.add('anti-slop'); need.add('art-direction'); need.add('color-systems'); need.add('type-pairing');
+  }
+  if (pageLike && brief?.mode !== 'refine') { need.add('hero-composition'); need.add('copywriting'); }
+  if (/\b(icon|illustration|diagram|logo|wordmark|svg|texture|grain)\b/.test(text)) need.add('svg-craft');
+  if (/\b(scroll|parallax|sticky|pin|scrub|reveal|stagger)\b/.test(text) || animation === 'gsap') need.add('scroll-choreography');
+  if (depth !== 'css' || animation === 'gsap' || /\b(performance|fast|60fps|lighthouse)\b/.test(text)) need.add('performance-budget');
   if (depth === 'threejs') { need.add('threejs'); need.add('3d-performance'); if (!isReact) need.add('vanilla-motion'); }
   if (depth === 'r3f') { need.add('react-three-fiber'); need.add('threejs'); need.add('3d-performance'); }
   if (depth === 'shader') { need.add('shaders'); need.add('webgl'); need.add('3d-performance'); }
@@ -73,11 +96,15 @@ function selectionPrompt({ brief, inspection, catalogue, maxSkills }) {
  * @param {string} [input.complexity]
  * @returns {Promise<{ids: string[], loaded: Array<{id: string, tokens: number}>, contextBlock: string, method: string, selection: Array<{id, why, source}>, tech: object, required: string[], skipped: string[], catalogueSize: number, summary: string}>}
  */
-export async function selectSkills({ router, registry, brief, inspection = {}, config = {}, bus, logger, complexity = 'standard' } = {}) {
+export async function selectSkills({ router, registry, brief, inspection = {}, config = {}, bus, logger, complexity = 'standard', catalogueLimit } = {}) {
   const maxSkills = Number(config?.skills?.maxSkillsPerTask ?? 8);
   const budgetTokens = Number(config?.runtime?.skillBudgetTokens ?? 14000);
   const always = [...(config?.skills?.alwaysInclude ?? [])].filter((id) => registry.has(id));
-  const catalogue = catalogueLines(registry);
+  const catalogue = catalogueLines(registry, {
+    limit: catalogueLimit,
+    keep: requiredSkillsFor({ tech: {}, inspection, brief, registry, complexity }),
+    request: brief?.text ?? '', taskType: brief?.taskType ?? 'create-page', workspace: inspection, config, logger,
+  });
   bus?.emit('skills.discovered', { count: catalogue.length });
 
   let method = 'retriever';
@@ -107,9 +134,11 @@ export async function selectSkills({ router, registry, brief, inspection = {}, c
         method = 'model';
       } else {
         logger?.debug('skill selection: model reply was not JSON; using retriever');
+        bus?.emit('warn', { message: 'skill selection fell back to the retriever: the model reply was not JSON' });
       }
     } catch (error) {
       logger?.debug('skill selection: model call failed; using retriever', { error: String(error?.message ?? error) });
+      bus?.emit('warn', { message: 'skill selection fell back to the retriever: ' + String(error?.message ?? error).slice(0, 160) });
     }
   }
   if (!/react|next/.test(String(inspection?.framework ?? '').toLowerCase()) && tech.depth === 'r3f') tech.depth = 'threejs';
@@ -139,10 +168,13 @@ export async function selectSkills({ router, registry, brief, inspection = {}, c
   const loaded = [];
   const skipped = [];
   let tokens = 0;
+  // A hard ceiling on how many bodies load at once. Without it the model's picks
+  // plus every required skill reached twenty, which is a dump, not a selection.
+  const hardCap = Number(config?.skills?.maxLoadedSkills ?? 12);
   for (const entry of ordered) {
     const skill = registry.get(entry.id);
     const cost = skill?.tokens ?? estimateTokens(skill?.body ?? '');
-    const overCount = loaded.length >= maxSkills + required.length;
+    const overCount = loaded.length >= Math.min(hardCap, maxSkills + required.length);
     if (overCount || (tokens + cost > budgetTokens && loaded.length >= 3)) { skipped.push(entry.id); continue; }
     loaded.push({ id: entry.id, tokens: cost, source: entry.source });
     tokens += cost;

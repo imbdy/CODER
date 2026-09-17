@@ -4,101 +4,104 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>Artisan site</title>
-<!-- composed by artisan | skills: anti-slop, frontend-master, project-architecture, visual-design, layout, responsive-design | build: styles/main.css + scripts/main.js -->
-<meta name="description" content="Context in one considered place. Clear, fast, and built to be used."/>
+<!-- composed by artisan | skills: anti-slop, frontend-master, project-architecture, gsap, animation-principles, visual-design, threejs, motion | build: styles/main.css + scripts/main.js -->
+<meta name="description" content="Everything your team needs to move quickly, without a mountain of configuration."/>
 <link rel="preconnect" href="https://fonts.googleapis.com" />
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Outfit:wght@300..700&family=Fraunces:ital,wght@0,400;0,600;1,400&family=IBM+Plex+Mono:wght@300..700&display=swap" />
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@300..700&family=Sora:ital,wght@0,400;0,600;1,400&family=JetBrains+Mono:wght@300..700&display=swap" />
+<script type="importmap">{"imports":{"three":"https://unpkg.com/three@0.160.0/build/three.module.js","three/addons/":"https://unpkg.com/three@0.160.0/examples/jsm/"}}</script>
+<script src="https://cdn.jsdelivr.net/npm/gsap@3.12.5/dist/gsap.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/gsap@3.12.5/dist/ScrollTrigger.min.js"></script>
 <style>
 /* =============================================================
-   Humanist Airy — base layer
+   Aurora Depth — base layer
    Generated from design tokens. Change values in .forge/config.json
    or in the :root block below, never by editing rules ad hoc.
    ============================================================= */
 
 :root {
   /* palette */
-  --color-bg: #faf7f2;
-  --color-surface: #ffffff;
-  --color-surface-alt: #f5efe5;
-  --color-text: #171512;
-  --color-text-muted: #767470;
-  --color-text-faint: #9b9894;
+  --color-bg: #0d1014;
+  --color-surface: #141821;
+  --color-surface-alt: #191e29;
+  --color-text: #eef2f7;
+  --color-text-muted: #909398;
+  --color-text-faint: #63666a;
   --color-accent: #e06a2b;
-  --color-accent-hover: #c3571d;
-  --color-accent-quiet: #e7bda6;
-  --color-accent-soft: rgb(224 106 43 / 0.12);
+  --color-accent-hover: #e7824b;
+  --color-accent-quiet: #834321;
+  --color-accent-soft: rgb(224 106 43 / 0.16);
   --color-accent-readable: #e06a2b;
   --color-on-accent: #0b0b0c;
-  --color-border: rgb(0 0 0 / 0.1);
-  --color-border-strong: rgb(0 0 0 / 0.2);
+  --color-border: rgb(255 255 255 / 0.1);
+  --color-border-strong: rgb(255 255 255 / 0.2);
 
   /* type */
-  --font-sans: "Outfit", "Inter", system-ui, sans-serif;
-  --font-display: "Fraunces", Georgia, serif;
-  --font-mono: "IBM Plex Mono", ui-monospace, monospace;
-  --text-xs: 0.672rem;
-  --text-sm: 0.82rem;
+  --font-sans: "Inter", system-ui, sans-serif;
+  --font-display: "Sora", "Inter", system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, monospace;
+  --text-xs: 0.63rem;
+  --text-sm: 0.794rem;
   --text-base: 1rem;
-  --text-lg: 1.22rem;
-  --text-xl: 1.488rem;
-  --text-2xl: clamp(1.525rem, 1.64rem + 0.36vw, 1.816rem);
-  --text-3xl: clamp(1.861rem, 2.00rem + 0.44vw, 2.215rem);
-  --text-4xl: clamp(2.271rem, 2.44rem + 0.54vw, 2.703rem);
-  --text-5xl: clamp(2.769rem, 2.98rem + 0.66vw, 3.297rem);
+  --text-lg: 1.26rem;
+  --text-xl: 1.588rem;
+  --text-2xl: clamp(1.68rem, 1.81rem + 0.40vw, 2rem);
+  --text-3xl: clamp(2.117rem, 2.28rem + 0.50vw, 2.52rem);
+  --text-4xl: clamp(2.668rem, 2.87rem + 0.64vw, 3.176rem);
+  --text-5xl: clamp(3.362rem, 3.62rem + 0.80vw, 4.002rem);
   --weight-regular: 400;
   --weight-medium: 500;
   --weight-semibold: 600;
   --weight-bold: 700;
-  --tracking-display: -0.015em;
+  --tracking-display: -0.025em;
   --tracking-heading: -0.01em;
   --tracking-body: 0;
   --tracking-caps: 0.08em;
 
   /* space + shape */
   --space-0: 0;
-  --space-1: 5px;
-  --space-2: 10px;
-  --space-3: 15px;
-  --space-4: 20px;
-  --space-6: 30px;
-  --space-8: 40px;
-  --space-12: 60px;
-  --space-16: 80px;
-  --space-24: 120px;
-  --space-32: 160px;
-  --space-section: 125px;
-  --space-sectionLg: 192px;
-  --space-gutter: 25px;
-  --radius-sm: 10px;
-  --radius-md: 16px;
-  --radius-lg: 24px;
-  --radius-xl: 32px;
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-6: 24px;
+  --space-8: 32px;
+  --space-12: 48px;
+  --space-16: 64px;
+  --space-24: 96px;
+  --space-32: 128px;
+  --space-section: 96px;
+  --space-sectionLg: 160px;
+  --space-gutter: 20px;
+  --radius-sm: 6px;
+  --radius-md: 10px;
+  --radius-lg: 16px;
+  --radius-xl: 24px;
   --radius-pill: 999px;
-  --shadow-xs: 0 1px 2px rgb(16 16 20 / 0.06);
-  --shadow-sm: 0 2px 6px rgb(16 16 20 / 0.08);
-  --shadow-md: 0 12px 28px rgb(16 16 20 / 0.10);
-  --shadow-lg: 0 28px 60px rgb(16 16 20 / 0.14);
-  --shadow-accentGlow: 0 14px 40px rgb(224 106 43 / 0.22);
-  --shadow-inset: inset 0 1px 0 rgb(255 255 255 / 0.6);
+  --shadow-xs: 0 1px 2px rgb(0 0 0 / 0.4);
+  --shadow-sm: 0 2px 8px rgb(0 0 0 / 0.45);
+  --shadow-md: 0 10px 30px rgb(0 0 0 / 0.5);
+  --shadow-lg: 0 24px 60px rgb(0 0 0 / 0.55);
+  --shadow-accentGlow: 0 12px 40px rgb(224 106 43 / 0.28);
+  --shadow-inset: inset 0 1px 0 rgb(255 255 255 / 0.06);
 
   /* motion */
   --duration-instant: 90ms;
   --duration-fast: 160ms;
-  --duration-base: 260ms;
-  --duration-slow: 460ms;
-  --duration-cinematic: 720ms;
+  --duration-base: 240ms;
+  --duration-slow: 520ms;
+  --duration-cinematic: 900ms;
   --ease-standard: cubic-bezier(0.2, 0.7, 0.2, 1);
   --ease-emphasized: cubic-bezier(0.16, 1, 0.3, 1);
   --ease-entrance: cubic-bezier(0.22, 1, 0.36, 1);
   --ease-exit: cubic-bezier(0.4, 0, 1, 1);
   --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
-  --stagger: 65ms;
+  --stagger: 70ms;
   --motion-distance: 12px;
   --motion-lift: 2px;
 
   /* layout */
-  --max-width: 74rem;
+  --max-width: 72rem;
   --prose-width: 62ch;
 }
 
@@ -741,6 +744,59 @@ button, input, select, textarea { font: inherit; color: inherit; }
 .footer__note { margin-top: var(--space-10); font-size: var(--text-xs); color: var(--color-text-faint); }
 
 
+/* ---------------------------------------------------------- premium 3D + scroll ---- */
+
+.hero--premium { position: relative; overflow: clip; }
+.hero-webgl {
+  position: absolute;
+  inset: 0;
+  width: 100%; height: 100%;
+  z-index: 0;
+  pointer-events: none;
+  opacity: 0.95;
+}
+.hero-webgl canvas { width: 100% !important; height: 100% !important; display: block; }
+.hero--premium .container { position: relative; z-index: 1; }
+.hero__orb {
+  position: absolute;
+  border-radius: 50%;
+  background: radial-gradient(circle at 30% 30%, var(--color-accent), transparent 70%);
+  filter: blur(18px);
+  opacity: 0.55;
+  pointer-events: none;
+}
+.hero__orb--1 { width: 420px; height: 420px; top: -8%; right: -6%; }
+.hero__orb--2 { width: 300px; height: 300px; bottom: 10%; left: 6%; opacity: 0.35; }
+.hero__orb--3 { width: 180px; height: 180px; top: 42%; right: 22%; opacity: 0.4; }
+
+.scroll-pin { position: relative; }
+.scroll-pin__sticky {
+  position: sticky;
+  top: 0;
+  height: 100vh;
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+}
+.scroll-reveal { will-change: transform, opacity; }
+.parallax { will-change: transform; }
+.horizontal { display: flex; gap: var(--space-6); will-change: transform; }
+.glass {
+  background: color-mix(in oklab, var(--color-surface) 72%, transparent);
+  backdrop-filter: blur(16px) saturate(1.2);
+  border: 1px solid color-mix(in oklab, var(--color-border) 70%, transparent);
+}
+
+@media (max-width: 60rem) {
+  .hero-webgl { opacity: 0.6; }
+  .scroll-pin__sticky { height: auto; position: relative; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .hero-webgl { display: none !important; }
+  .parallax { transform: none !important; }
+}
+
+
 /* ---------------------------------------------------------------- motion ---- */
 
 [data-reveal] {
@@ -850,7 +906,7 @@ button, input, select, textarea { font: inherit; color: inherit; }
 <main id="main">
 <header class="nav" data-nav>
       <div class="container nav__inner">
-        <a class="nav__brand" href="#top">Context</a>
+        <a class="nav__brand" href="#top">Platform</a>
         <button class="nav__toggle" type="button" aria-expanded="false" aria-controls="site-nav" data-nav-toggle>
           <span class="visually-hidden">Toggle navigation</span>
           <span class="nav__toggle-bar" aria-hidden="true"></span>
@@ -858,44 +914,50 @@ button, input, select, textarea { font: inherit; color: inherit; }
         <nav id="site-nav" aria-label="Primary">
           <ul class="nav__links">
             <li><a class="nav__link" href="#product">Product</a></li>
-            <li><a class="nav__link" href="#how-it-works">How it works</a></li>
             <li><a class="nav__link" href="#pricing">Pricing</a></li>
-            <li><a class="btn btn--primary" href="#start"><span class="btn__label">Get started</span></a></li>
+            <li><a class="nav__link" href="#docs">Docs</a></li>
+            <li><a class="btn btn--primary" href="#start"><span class="btn__label">Start free</span></a></li>
           </ul>
         </nav>
         
       </div>
     </header>
-<section class="hero hero--split" id="top">
+<section class="hero hero--premium hero--centered" id="top" data-hero-premium>
+      <div class="hero-webgl" aria-hidden="true">
+        <canvas id="hero-webgl" data-hero-canvas></canvas>
+        <div class="hero__orb hero__orb--1 parallax" data-parallax data-speed="0.12"></div>
+        <div class="hero__orb hero__orb--2 parallax" data-parallax data-speed="0.06"></div>
+        <div class="hero__orb hero__orb--3 parallax" data-parallax data-speed="0.09"></div>
+      </div>
       <div class="container hero__inner">
-        <div class="stack stack--xs">
-          <span class="hero__eyebrow">Care</span>
-          <h1 class="hero__title">Context, thoughtfully</h1>
-          <p class="hero__sub">Context in one considered place. Clear, fast, and built to be used.</p>
+        <div class="stack stack--xs" data-reveal>
+          <span class="hero__eyebrow">For teams that ship</span>
+          <h1 class="hero__title">Platform, in depth</h1>
+          <p class="hero__sub">Everything your team needs to move quickly, without a mountain of configuration.</p>
           <div class="hero__actions">
-            <a class="btn btn--primary" href="#start"><span class="btn__label">Get started</span></a>
+            <a class="btn btn--primary" href="#start"><span class="btn__label">Start free</span></a>
             <a class="btn btn--ghost" href="#how"><span class="btn__label">See how it works</span></a>
           </div>
-          <p class="hero__proof">Trusted by teams in 12 countries</p>
+          <p class="hero__proof">SOC 2 Type II &middot; 99.98% uptime</p>
         </div>
-        <div class="hero__object float" aria-hidden="true"></div>
+        <div class="hero__object glass float" data-parallax data-speed="0.04" aria-hidden="true"></div>
       </div>
     </section>
 <section class="section section--tight proof"><div class="container"><p class="proof__label">Used by</p><div class="proof__items"><span class="proof__item">Northwind</span>
 <span class="proof__item">Halden &amp; Co</span>
 <span class="proof__item">Atlas Labs</span>
 <span class="proof__item">Meridian</span>
-<span class="proof__item">Kestrel</span></div><div class="metrics" style="margin-top:var(--space-10)"><div class="metric"><div class="metric__value">3.2x</div><div class="metric__label">faster to launch</div></div>
-<div class="metric"><div class="metric__value">41%</div><div class="metric__label">less busywork</div></div>
-<div class="metric"><div class="metric__value">12k</div><div class="metric__label">teams onboard</div></div></div></div></section>
+<span class="proof__item">Kestrel</span></div><div class="metrics" style="margin-top:var(--space-10)"><div class="metric"><div class="metric__value">48ms</div><div class="metric__label">median response</div></div>
+<div class="metric"><div class="metric__value">99.98%</div><div class="metric__label">uptime</div></div>
+<div class="metric"><div class="metric__value">12k</div><div class="metric__label">teams</div></div></div></div></section>
 <section class="section" id="features"><div class="container"><div class="section__head">
         <h2 class="section__title">What you actually get</h2>
-        </div><div class="features--columns"><article class="feature" data-reveal style="--reveal-delay:0ms"><span class="tag">01</span><h3>Built for the real workflow</h3><p class="feature__body">No unused features, no empty states that dead-end.</p></article>
-<article class="feature" data-reveal style="--reveal-delay:60ms"><span class="tag">02</span><h3>Detail in the details</h3><p class="feature__body">States, focus rings, loading and errors are designed, not defaulted.</p></article>
-<article class="feature" data-reveal style="--reveal-delay:120ms"><span class="tag">03</span><h3>Fast where it counts</h3><p class="feature__body">The first interaction is instant; heavy work stays off the critical path.</p></article></div></div></section>
-<section class="section showcase" id="how"><div class="container showcase__inner"><div class="stack stack--sm"><h2 class="section__title">See it in place</h2><p class="lede">A close look at how it behaves when you actually use it, with real content and real constraints.</p><ul class="showcase__list"><li>Responsive down to 390px</li>
-<li>Reduced-motion respected</li>
-<li>Contrast checked against WCAG AA</li></ul></div><div class="hero__object float" aria-hidden="true"></div></div></section>
+        </div><div class="features--bento"><article class="feature" data-reveal style="--reveal-delay:0ms"><span class="tag">01</span><h3>Set up in minutes</h3><p class="feature__body">Import what you have, keep what works, and be productive the same afternoon.</p></article>
+<article class="feature" data-reveal style="--reveal-delay:60ms"><span class="tag">02</span><h3>Readable by default</h3><p class="feature__body">Dense information arranged so the next action is obvious.</p></article>
+<article class="feature" data-reveal style="--reveal-delay:120ms"><span class="tag">03</span><h3>Nothing to babysit</h3><p class="feature__body">Managed infrastructure with sensible limits and honest alerts.</p></article></div></div></section>
+<section class="section showcase" id="how"><div class="container showcase__inner"><div class="stack stack--sm"><h2 class="section__title">See it in place</h2><p class="lede">The same surface for planning, executing and reviewing. Less tab-switching, more finished work.</p><ul class="showcase__list"><li>Keyboard-first navigation</li>
+<li>State survives a reload</li>
+<li>Errors explain the fix</li></ul></div><div class="hero__object float" aria-hidden="true"></div></div></section>
 <section class="section" id="pricing"><div class="container"><div class="section__head">
         <h2 class="section__title">Straightforward pricing</h2>
         </div><div class="tiers"><article class="tier"><p class="tier__name">Starter</p><p class="tier__price">EUR 19</p><p class="tier__cadence">per month</p><ul class="tier__features"><li>1 workspace</li><li>5 seats</li><li>Community support</li></ul><a class="btn btn--ghost" href="#start"><span class="btn__label">Choose Starter</span></a></article>
@@ -903,16 +965,16 @@ button, input, select, textarea { font: inherit; color: inherit; }
 <article class="tier"><p class="tier__name">Scale</p><p class="tier__price"> Custom</p><p class="tier__cadence">annual</p><ul class="tier__features"><li>SSO &amp; SCIM</li><li>Dedicated region</li><li>Solution engineer</li></ul><a class="btn btn--ghost" href="#start"><span class="btn__label">Choose Scale</span></a></article></div></div></section>
 <section class="section"><div class="container"><div class="section__head">
         <h2 class="section__title">What people say</h2>
-        </div><div class="quotes"><figure class="quote" data-reveal><blockquote class="quote__text">It looked considered on the first screen, and it still does after six months of use.</blockquote><figcaption class="quote__by">Dana Whitfield &mdash; Head of Operations</figcaption></figure>
-<figure class="quote" data-reveal><blockquote class="quote__text">Nothing flashy. It does exactly what it says, quickly.</blockquote><figcaption class="quote__by">Tomas Reyes &mdash; Founder, Halden &amp; Co</figcaption></figure></div></div></section>
+        </div><div class="quotes"><figure class="quote" data-reveal><blockquote class="quote__text">We cut our release checklist from forty items to six, and we ship more often.</blockquote><figcaption class="quote__by">Dana Whitfield &mdash; Head of Engineering</figcaption></figure>
+<figure class="quote" data-reveal><blockquote class="quote__text">The first tool here that designers and engineers both actually open every day.</blockquote><figcaption class="quote__by">Tomas Reyes &mdash; Founder, Halden &amp; Co</figcaption></figure></div></div></section>
 <section class="section"><div class="container"><div class="section__head">
         <h2 class="section__title">Questions, answered</h2>
         </div><div class="faq__list"><div class="faq__item"><button class="faq__q" type="button" aria-expanded="false" aria-controls="faq-a-0" data-faq-q>How long does setup take?</button><div class="faq__a" id="faq-a-0" hidden data-faq-a><p>Most teams are working within an hour; nothing requires a migration window.</p></div></div>
 <div class="faq__item"><button class="faq__q" type="button" aria-expanded="false" aria-controls="faq-a-1" data-faq-q>Can I keep my existing stack?</button><div class="faq__a" id="faq-a-1" hidden data-faq-a><p>Yes. It reads what you already have and leaves your tooling in place.</p></div></div>
 <div class="faq__item"><button class="faq__q" type="button" aria-expanded="false" aria-controls="faq-a-2" data-faq-q>What happens to my data if I leave?</button><div class="faq__a" id="faq-a-2" hidden data-faq-a><p>Full export in open formats, on demand, without a support ticket.</p></div></div></div></div></section>
-<section class="section"><div class="container"><div class="cta__panel" data-reveal><div class="stack stack--xs"><h2 class="cta__title">Start with Context</h2><p class="lede">Set it up in minutes. Nothing to install, nothing to babysit.</p></div><a class="btn btn--primary" href="#start"><span class="btn__label">Get started</span></a></div></div></section>
-<footer class="footer"><div class="container"><div class="footer__inner"><span class="footer__brand">Context</span><div class="footer__cols"><div><p class="footer__col-title">Product</p><ul class="footer__links"><li><a href="#">Product</a></li><li><a href="#">How it works</a></li><li><a href="#">Pricing</a></li></ul></div>
-<div><p class="footer__col-title">Company</p><ul class="footer__links"><li><a href="#">About</a></li><li><a href="#">Careers</a></li><li><a href="#">Contact</a></li></ul></div></div></div><p class="footer__note">© 2026 Context. All rights reserved.</p></div></footer>
+<section class="section"><div class="container"><div class="cta__panel" data-reveal><div class="stack stack--xs"><h2 class="cta__title">Start with Platform</h2><p class="lede">Set it up in minutes. Nothing to install, nothing to babysit.</p></div><a class="btn btn--primary" href="#start"><span class="btn__label">Start free</span></a></div></div></section>
+<footer class="footer"><div class="container"><div class="footer__inner"><span class="footer__brand">Platform</span><div class="footer__cols"><div><p class="footer__col-title">Product</p><ul class="footer__links"><li><a href="#">Product</a></li><li><a href="#">Pricing</a></li><li><a href="#">Docs</a></li></ul></div>
+<div><p class="footer__col-title">Company</p><ul class="footer__links"><li><a href="#">About</a></li><li><a href="#">Careers</a></li><li><a href="#">Contact</a></li></ul></div></div></div><p class="footer__note">© 2026 Platform. All rights reserved.</p></div></footer>
 </main>
 <script>
 /* nav, FAQ, auth validation, reveal. */
@@ -953,6 +1015,151 @@ button, input, select, textarea { font: inherit; color: inherit; }
     }), { threshold: 0.12 });
     document.querySelectorAll("[data-reveal]").forEach((el) => io.observe(el));
   } else { document.querySelectorAll("[data-reveal]").forEach((el) => el.classList.add("enter")); }
+
+  // ---- premium scroll + 3D ----
+  try {
+    const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    const isCoarse = window.matchMedia("(pointer: coarse)").matches;
+    const prefersLow = window.matchMedia("(max-width: 768px)").matches;
+    // Parallax (data-parallax)
+    if (!reduceMotion) {
+      const els = document.querySelectorAll("[data-parallax]");
+      const onParallax = () => {
+        const sy = window.scrollY;
+        els.forEach((el) => {
+          const speed = parseFloat(el.dataset.speed || "0.08");
+          el.style.transform = "translate3d(0," + (sy * speed * -0.35) + "px,0)";
+        });
+      };
+      window.addEventListener("scroll", onParallax, { passive: true });
+      onParallax();
+    }
+    // Mouse parallax for orbs / hero object
+    if (!reduceMotion && !isCoarse) {
+      const hero = document.querySelector("[data-hero-premium]");
+      const orbs = document.querySelectorAll(".hero__orb");
+      window.addEventListener("mousemove", (e) => {
+        const x = (e.clientX / window.innerWidth - 0.5) * 2;
+        const y = (e.clientY / window.innerHeight - 0.5) * 2;
+        orbs.forEach((orb, i) => {
+          const f = (i + 1) * 6;
+          orb.style.transform = "translate3d(" + (x * f) + "px," + (y * f * 0.6) + "px,0)";
+        });
+        if (hero) hero.style.setProperty("--mouse-x", String(x));
+      }, { passive: true });
+    }
+    // GSAP ScrollTrigger if available (CDN), otherwise fallback to IntersectionObserver already done
+    const hasGSAP = typeof window.gsap !== "undefined";
+    if (!reduceMotion && hasGSAP && window.ScrollTrigger) {
+      window.gsap.registerPlugin(window.ScrollTrigger);
+      // Pin + scrub narrative: every [data-scroll-pin] becomes a 120% scrub story
+      document.querySelectorAll("[data-scroll-pin]").forEach((pin) => {
+        const tl = window.gsap.timeline({
+          scrollTrigger: {
+            trigger: pin,
+            pin: pin.querySelector("[data-pin]") || pin,
+            scrub: 1,
+            start: "top top",
+            end: "+=120%",
+            anticipatePin: 1
+          }
+        });
+        const steps = pin.querySelectorAll("[data-step]");
+        steps.forEach((step, i) => {
+          tl.fromTo(step, { opacity: 0.35, y: 12 }, { opacity: 1, y: 0, duration: 0.4 }, i * 0.25);
+          tl.to(step, { opacity: 0.35, duration: 0.2 }, i * 0.25 + 0.35);
+        });
+      });
+      // Horizontal scroll
+      document.querySelectorAll("[data-horizontal]").forEach((wrap) => {
+        const track = wrap.querySelector("[data-horizontal-track]");
+        if (!track) return;
+        const len = track.children.length;
+        window.gsap.to(track, {
+          xPercent: -100 * (len - 1),
+          ease: "none",
+          scrollTrigger: {
+            trigger: wrap,
+            pin: true,
+            scrub: 1,
+            end: "+=" + (len * 100) + "%"
+          }
+        });
+      });
+      // Text reveal
+      window.gsap.utils.toArray("[data-reveal]").forEach((el) => {
+        window.gsap.from(el, {
+          y: 18, opacity: 0,
+          duration: 0.6, ease: "power3.out",
+          scrollTrigger: { trigger: el, start: "top 88%", once: true }
+        });
+      });
+    }
+    // Three.js hero WebGL — single low-poly scene, mouse + scroll linked
+    const canvas = document.querySelector("[data-hero-canvas]");
+    if (canvas && !reduceMotion && !isCoarse && !prefersLow) {
+      const loadThree = () => new Promise((resolve, reject) => {
+        if (window.THREE) return resolve(window.THREE);
+        const s = document.createElement("script");
+        s.type = "importmap";
+        s.textContent = JSON.stringify({ imports: { "three": "https://unpkg.com/three@0.160.0/build/three.module.js", "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/" } });
+        document.head.appendChild(s);
+        import("three").then(resolve).catch(reject);
+      });
+      loadThree().then((THREE) => {
+        const scene = new THREE.Scene();
+        const camera = new THREE.PerspectiveCamera(44, canvas.clientWidth / canvas.clientHeight, 0.1, 100);
+        camera.position.set(0, 0.2, 6);
+        const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: true, powerPreference: "high-performance" });
+        renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.8));
+        renderer.setSize(canvas.clientWidth, canvas.clientHeight, false);
+        renderer.toneMapping = THREE.ACESFilmicToneMapping;
+        // lights
+        scene.add(new THREE.AmbientLight(0xffffff, 0.7));
+        const dir = new THREE.DirectionalLight(0xffffff, 1.2);
+        dir.position.set(2, 3, 4);
+        scene.add(dir);
+        // orbs: 3 low-poly icosahedra
+        const geo = new THREE.IcosahedronGeometry(0.9, 1);
+        const mat1 = new THREE.MeshStandardMaterial({ color: 0x7c5cff, roughness: 0.35, metalness: 0.15, transparent: true, opacity: 0.95 });
+        const mat2 = new THREE.MeshStandardMaterial({ color: 0x4f46e5, roughness: 0.5, metalness: 0.1, transparent: true, opacity: 0.75 });
+        const mat3 = new THREE.MeshStandardMaterial({ color: 0x06b6d4, roughness: 0.4, metalness: 0.2, transparent: true, opacity: 0.65 });
+        const m1 = new THREE.Mesh(geo, mat1); m1.position.set(-1.6, 0.4, 0);
+        const m2 = new THREE.Mesh(new THREE.IcosahedronGeometry(0.6, 1), mat2); m2.position.set(1.4, -0.2, -0.5);
+        const m3 = new THREE.Mesh(new THREE.IcosahedronGeometry(0.45, 1), mat3); m3.position.set(0.6, 0.9, -0.8);
+        scene.add(m1, m2, m3);
+        const onResize = () => {
+          const w = canvas.clientWidth, h = canvas.clientHeight;
+          camera.aspect = w / h; camera.updateProjectionMatrix();
+          renderer.setSize(w, h, false);
+        };
+        window.addEventListener("resize", onResize, { passive: true });
+        let mx = 0, my = 0, sx = 0;
+        window.addEventListener("mousemove", (e) => { mx = (e.clientX / window.innerWidth - 0.5) * 0.6; my = (e.clientY / window.innerHeight - 0.5) * 0.4; }, { passive: true });
+        window.addEventListener("scroll", () => { sx = window.scrollY / 1200; }, { passive: true });
+        let raf = 0;
+        const tick = () => {
+          raf = requestAnimationFrame(tick);
+          m1.rotation.y += 0.003 + mx * 0.002; m1.rotation.x += 0.0015 + my * 0.001;
+          m2.rotation.y -= 0.004 + mx * 0.0015; m2.rotation.z += 0.002;
+          m3.rotation.y += 0.005; m3.rotation.x -= 0.002 + my * 0.001;
+          camera.position.x += (mx * 0.9 - camera.position.x) * 0.04;
+          camera.position.y += (-my * 0.5 - camera.position.y + 0.2) * 0.04;
+          camera.lookAt(0, 0, 0);
+          m1.position.y = 0.4 + Math.sin(Date.now() * 0.0004) * 0.12;
+          // scroll linkage
+          scene.rotation.y = sx * 0.18;
+          renderer.render(scene, camera);
+        };
+        tick();
+        // dispose on page hide
+        document.addEventListener("visibilitychange", () => { if (document.hidden) cancelAnimationFrame(raf); else tick(); });
+      }).catch(() => {});
+    } else if (canvas) {
+      canvas.style.display = "none";
+    }
+  } catch (e) { /* premium enhancement best effort */ }
+  
 })();
 
 </script>

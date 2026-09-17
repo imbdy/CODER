@@ -46,7 +46,7 @@ export const DEFAULT_CONFIG = {
     /** Implementation-loop history budget (tokens). Small local models get trimmed harder by the router heuristics. */
     contextBudgetTokens: 24000,
     /** Budget for skill bodies injected into the implementation prompt (tokens). */
-    skillBudgetTokens: 14000,
+    skillBudgetTokens: 22000,
     /** Use the live model executor for builds (falls back to the deterministic engine when no model is reachable). */
     useAgent: true,
     /** Hard cap on implementation turns (includes QA iterations and repair passes). */

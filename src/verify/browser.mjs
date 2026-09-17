@@ -268,6 +268,29 @@ export const METRICS_SCRIPT = String.raw`(() => {
   safe('a11y', () => ({ imagesWithoutAlt: [...document.images].filter((img) => !img.hasAttribute('alt')).length, inputsWithoutLabel: [...document.querySelectorAll('input:not([type=hidden]), textarea, select')].filter((el) => !el.labels?.length && !el.getAttribute('aria-label') && !el.getAttribute('aria-labelledby')).length, landmarks: { main: document.querySelectorAll('main').length, nav: document.querySelectorAll('nav').length, header: document.querySelectorAll('header').length, footer: document.querySelectorAll('footer').length }, buttonsWithoutName: [...document.querySelectorAll('button')].filter((b) => !textOf(b) && !b.getAttribute('aria-label')).length }));
   safe('assets', () => ({ stylesheets: document.querySelectorAll('link[rel=stylesheet]').length, moduleScripts: document.querySelectorAll('script[type=module]').length, scripts: document.querySelectorAll('script[src]').length, inlineStyleChars: [...document.querySelectorAll('style')].reduce((n, s) => n + s.textContent.length, 0), inlineScriptChars: [...document.querySelectorAll('script:not([src])')].reduce((n, s) => n + s.textContent.length, 0), fonts: [...document.fonts].filter((f) => f.status === 'loaded').length, fontsFailed: [...document.fonts].filter((f) => f.status === 'error').length }));
   safe('bodyText', () => (document.body.innerText || '').replace(/\s+/g, ' ').trim().length);
+  safe('structures', () => ({
+    tables: document.querySelectorAll('table').length,
+    tableRows: document.querySelectorAll('table tbody tr, table tr').length,
+    definitionLists: document.querySelectorAll('dl').length,
+    blockquotes: document.querySelectorAll('blockquote, figure > q, [class*="quote"]').length,
+    citations: document.querySelectorAll('cite, figcaption').length,
+    orderedLists: document.querySelectorAll('ol').length,
+    orderedItems: document.querySelectorAll('ol > li').length,
+    forms: document.querySelectorAll('form').length,
+    navLinks: document.querySelectorAll('nav a, header a').length,
+    landmarkSections: document.querySelectorAll('main > section, main > article, body > section').length,
+    headingTexts: [...document.querySelectorAll('h1,h2,h3')].filter(visible).map((h) => textOf(h).slice(0, 70)),
+  }));
+  safe('copy', () => {
+    const text = (document.body.innerText || '').replace(/\s+/g, ' ');
+    // Phrases any competitor could paste unchanged (see skills/copywriting).
+    const filler = ['everything you need', 'everything your team needs', 'powerful yet simple', 'coming soon', 'lorem ipsum', 'get started today', 'take your', 'to the next level', 'seamlessly', 'supercharge', 'unlock your', 'best-in-class', 'world-class', 'cutting-edge', 'game-changing', 'revolutionary', 'one-stop', 'trusted by thousands', 'built for the future'];
+    const hits = filler.filter((phrase) => text.toLowerCase().includes(phrase));
+    const h1 = document.querySelector('h1');
+    const ctas = [...document.querySelectorAll('a[class*="cta"], a[class*="btn"], button')].filter(visible).map(textOf).filter(Boolean);
+    const genericCta = ctas.filter((label) => /^(get started|sign up|learn more|request a demo|book a demo|contact us|try (it )?free|start (free|now)|submit|read more|click here)$/i.test(label.trim()));
+    return { fillerHits: hits, words: text.split(/\s+/).filter(Boolean).length, h1Text: h1 ? textOf(h1).slice(0, 120) : '', ctaLabels: ctas.slice(0, 6), genericCtaLabels: genericCta.slice(0, 4) };
+  });
   return JSON.stringify(out);
 })()`;
 

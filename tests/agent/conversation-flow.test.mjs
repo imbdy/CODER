@@ -81,8 +81,13 @@ describe('conversation flow (scripted live model)', { timeout: 240000 }, () => {
     assert.ok(run.agreedSnapshot.accepted.some((r) => /typography/i.test(r)));
     // skills: discovered, model-selected, loaded, required enforced
     assert.equal(run.skills.method, 'model');
-    assert.equal(run.report.skills.catalogueSize, 46);
+    assert.ok(run.report.skills.catalogueSize >= 46, `catalogue discovered: ${run.report.skills.catalogueSize}`);
     for (const id of ['typography', 'visual-design', 'anti-slop']) assert.ok(run.skills.loaded.includes(id), `skill ${id} loaded`);
+    // the taste layer is mandatory for a page build
+    for (const id of ['art-direction', 'color-systems', 'type-pairing', 'hero-composition', 'copywriting']) {
+      assert.ok(run.skills.loaded.includes(id), `taste skill ${id} loaded`);
+    }
+    assert.ok(run.report.artDirection?.id, 'an art direction was proposed to the model');
     assert.ok(!run.skills.loaded.includes('threejs'), 'no 3D skill for a CSS-depth design');
     // structured TODOs from the model + runtime-required QA
     assert.equal(run.plan.source, 'model');
@@ -170,6 +175,24 @@ describe('conversation flow (scripted live model)', { timeout: 240000 }, () => {
     assert.deepEqual(state.agreed.changeRequests, [], 'applied change requests are folded in');
     assert.ok(state.agreed.accepted.some((a) => /applied: make the hero more immersive/i.test(a)));
     assert.ok(state.agreed.rejected.some((r) => /purple/i.test(r)), 'decisions never forgotten');
+  });
+
+  it('a full brief executes immediately — no second "build it" required', async () => {
+    const ws2 = fs.mkdtempSync(path.join(os.tmpdir(), 'artisan-brief-'));
+    const cfg2 = loadConfig({ workspaceDir: ws2, overrides: { models: { order: ['openaiCompatible'], openaiCompatible: { baseUrl: mock.baseUrl, apiKey: 'test', model: mock.model } } } });
+    const state = createInteractiveState({ workspaceDir: ws2, config: cfg2 });
+    const brief = 'I want to build a landing page for my AI developer tool. I want the experience to feel premium, cinematic and immersive. I do not want a generic AI SaaS landing page. I want strong visual storytelling, beautiful typography, subtle but impressive motion, depth, and 3D where it actually makes sense.';
+    const res = await executeTurn(brief, state);
+    assert.equal(res.kind, 'task', `the brief should build straight away, got: ${JSON.stringify(res).slice(0, 300)}`);
+    assert.equal(res.mode, 'create');
+    assert.ok(fs.existsSync(path.join(ws2, 'index.html')), 'files were written on the first turn');
+    // the brief's own decisions reached the build
+    assert.ok(state.agreed.project, 'project captured from the brief');
+    assert.ok(state.agreed.rejected.some((r) => /saas|generic/i.test(r)), `rejection captured: ${JSON.stringify(state.agreed.rejected)}`);
+    // and a follow-up idea does NOT silently rebuild
+    const followUp = await executeTurn('I want to build a landing page for a coffee roaster, warm and editorial, with big type.', state);
+    assert.equal(followUp.kind, 'answer', 'once a build exists, a new brief is discussed, not executed');
+    fs.rmSync(ws2, { recursive: true, force: true });
   });
 
   it('"do it" with nothing new is refused instead of rebuilding', async () => {

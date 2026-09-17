@@ -163,6 +163,8 @@ function buildSummary(run, state) {
   if (qa) {
     if (qa.rendered) lines.push(`Visual QA: rendered (${qa.method}), ${qa.rounds ?? 1} round(s), final ${qa.score}/100 ${qa.verdict}${qa.screenshots?.length ? ` — screenshots in ${path.dirname(qa.screenshots[0])}` : ''}`);
     else lines.push(`Visual QA: NOT rendered — ${qa.reason ?? 'no browser'}${qa.score !== undefined ? ` (static score ${qa.score})` : ''}`);
+    if (qa.coverage?.missing?.length) lines.push(`Brief coverage: MISSING ${qa.coverage.missing.join(', ')}${qa.coverage.met?.length ? ` (delivered: ${qa.coverage.met.join(', ')})` : ''}`);
+    else if (qa.coverage?.met?.length) lines.push(`Brief coverage: all requested parts present (${qa.coverage.met.join(', ')})`);
     const open = (qa.findings ?? []).filter((f) => f.severity !== 'minor').slice(0, 4);
     if (open.length && qa.verdict !== 'pass') lines.push(`Remaining weaknesses: ${open.map((f) => `${f.area}: ${f.evidence}`).join(' | ')}`);
   }
@@ -179,7 +181,10 @@ async function executeBuild(text, state, { bus, onProgress, readiness, offline =
   const brief = { request: text, mode, agreed: state.agreed, changeRequests };
   state.phase = 'build';
   state.currentTask = mode === 'refine' ? changeRequests.join('; ') : (state.agreed.summary || state.agreed.project || text);
-  onProgress({ type: 'phase', text: `executing (${mode}${offline ? ', deterministic engine' : ''})` });
+  // Do NOT name an engine here. This reply may have come from the local engine
+  // while the build still reaches a live model (separate routers, separate
+  // probes) — agent-build announces the brain it actually got.
+  onProgress({ type: 'phase', text: `executing (${mode})` });
   const off = bus.on(progressRelay(onProgress));
   let outcome;
   try {
@@ -207,7 +212,7 @@ async function executeBuild(text, state, { bus, onProgress, readiness, offline =
   if (run.status === 'failed' || (!files.length && run.status !== 'done')) {
     state.unresolvedIssues.push(`build ${run.status}: ${String(run.lastError ?? run.summary ?? run.error ?? '').slice(0, 160)}`);
   } else {
-    state.agreed = recordBuild(state.agreed, { files, summary: run.summary, spec: run.spec, skills: loaded, qaScore: score, mode, status: run.status });
+    state.agreed = recordBuild(state.agreed, { files, summary: run.summary, spec: run.spec, skills: loaded, qaScore: score, mode, status: run.status, artDirection: run.artDirection?.id ?? run.report?.artDirection?.id, sections: (run.page?.sections ?? []).map((s) => String(s).split(':')[0]) });
   }
   if (run.visualQa && run.visualQa.rendered === false) state.unresolvedIssues.push(`visual QA not rendered: ${run.visualQa.reason ?? 'no browser'}`);
   const summary = buildSummary(run, state);
@@ -242,7 +247,7 @@ async function offlineTurn(text, state, { bus, onProgress, onToken, meta, proven
   };
   if (meta) return reply(localMetaAnswer(meta, state, provenance));
   state.agreed = extractContextHeuristically(state.agreed, text);
-  const decision = decideExecution({ text });
+  const decision = decideExecution({ text, hasBuild: hasBuild(state) });
   if (decision.execute) {
     const readiness = contextReadiness(state.agreed, { hasBuild: hasBuild(state) });
     if (!readiness.ready) return reply(readiness.reason === 'nothing-new' ? REFUSAL_NOTHING_NEW : REFUSAL_EMPTY, { refusal: true });
@@ -307,13 +312,15 @@ export async function converse(request, state, { bus = new EventBus(), onProgres
   }
   const parsed = parseConversationReply(response.text);
   const streamed = mayExecute ? false : streamer.finish(parsed.reply);
-  if (parsed.intent === undefined && !Object.keys(parsed.patch ?? {}).length) {
-    // The model skipped the control block: fall back to deterministic extraction so nothing is lost.
-    state.agreed = extractContextHeuristically(state.agreed, text);
-  } else {
-    state.agreed = mergeContextPatch(state.agreed, parsed.patch, { source: 'model', turnText: text });
+  // The deterministic extractor ALWAYS runs first, then the model's patch is
+  // merged on top. A model patch that omits a field used to silently drop it:
+  // a brief listing "no purple, no glass, no gradients" came back with an empty
+  // rejected list because the model reported only the fields it felt like.
+  state.agreed = extractContextHeuristically(state.agreed, text);
+  if (Object.keys(parsed.patch ?? {}).length) {
+    state.agreed = mergeContextPatch(state.agreed, parsed.patch, { source: 'model' });
   }
-  const decision = decideExecution({ text, modelIntent: parsed.intent });
+  const decision = decideExecution({ text, modelIntent: parsed.intent, hasBuild: built });
   if (!decision.execute) {
     const answer = parsed.reply || '(no reply)';
     if (mayExecute && onToken) onToken(answer);

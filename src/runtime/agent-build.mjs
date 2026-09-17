@@ -46,7 +46,13 @@ export async function runBuild(input, { workspaceDir, config, bus, overrides = {
       progress?.({ type: 'brain', text: 'no live model — deterministic design engine' });
     }
   }
-  const outcome = await runTask(briefText(brief), { workspaceDir, config, overrides, bus, agreed: brief.agreed ? directivesFromContext(brief.agreed) : undefined });
+  const outcome = await runTask(briefText(brief), { workspaceDir, config, overrides, bus, // The directives carry what to avoid and emphasise; the BUILD RECORD carries
+  // what this project already decided (its identity, its section plan). A
+  // refinement needs both, or it re-derives the page from a "Do it." and
+  // silently restores the sections the first pass deliberately dropped.
+  agreed: brief.agreed ? { ...directivesFromContext(brief.agreed), build: brief.agreed.build } : undefined,
+    mode: brief.mode,
+  });
   outcome.run.engine = 'deterministic';
   outcome.run.engineReason = liveReason;
   outcome.run.mode = brief.mode;
@@ -81,7 +87,7 @@ function agentToRun(agent, brief, workspaceDir) {
     skillsRead: agent.skillsRead ?? [],
     spec: agent.spec,
     state: agent.state,
-    visualQa: qa ? { rendered: qa.rendered, method: qa.method, score: qa.score, verdict: qa.verdict, findings: qa.findings, screenshots: qa.screenshots, rounds: agent.visualQa.rounds.length, reason: qa.reason_unrendered } : { rendered: false, rounds: 0, reason: 'visual QA did not run' },
+    visualQa: qa ? { rendered: qa.rendered, method: qa.method, score: qa.score, verdict: qa.verdict, findings: qa.findings, screenshots: qa.screenshots, rounds: agent.visualQa.rounds.length, reason: qa.reason_unrendered, coverage: qa.coverage } : { rendered: false, rounds: 0, reason: 'visual QA did not run' },
     testing: agent.testing,
     writes,
     verification,
