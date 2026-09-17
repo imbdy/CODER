@@ -4,7 +4,7 @@ category: animation
 priority: high
 frameworks: [react]
 libraries: [motion]
-triggers: [motion, framer motion, enter exit, variants, stagger, hover, tap, drag, whileInView, useScroll, layout animation, shared layout, AnimatePresence, spring]
+triggers: [motion, framer motion, enter exit, variants, stagger, hover, tap, drag, whileInView, useScroll, layout animation, shared layout, AnimatePresence, spring, "smooth motion", cinematic, immersive, storytelling, "scroll motion"]
 description: Motion for React — variants, stagger, layout, gestures, scroll, for React-driven interactions.
 ---
 

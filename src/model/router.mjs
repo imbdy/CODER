@@ -35,7 +35,7 @@ export class ModelRouter {
     const list = [];
     for (const id of order) {
       if (id === 'ollama') list.push(new OllamaProvider(models.ollama ?? {}));
-      else if (id === 'openaiCompatible') list.push(new OpenAICompatibleProvider(models.openaiCompatible ?? models['openai-compatible'] ?? {}));
+      else if (id === 'openai-compatible' || id === 'openaiCompatible') list.push(new OpenAICompatibleProvider(models.openaiCompatible ?? models['openai-compatible'] ?? {}));
       else if (id === 'deterministic') list.push(new DeterministicProvider(models.deterministic ?? {}));
     }
     if (!list.length) list.push(new DeterministicProvider());
@@ -79,8 +79,11 @@ export class ModelRouter {
       const health = await this.#healthy(provider);
       if (health.ok || provider.id === 'deterministic') chain.push(provider);
     }
-    if (!chain.length) chain.push(this.deterministic);
-    return chain;
+    if (!chain.length) {
+      const fallback = this.deterministic ?? this.providers.find(p => p.id === 'deterministic');
+      if (fallback) chain.push(fallback);
+    }
+    return chain.filter(Boolean);
   }
   async activeChain() {
     if (this.preferred) return [this.preferred];
@@ -100,7 +103,7 @@ export class ModelRouter {
   async hasLiveModel() {
     if (this.preferred) return this.preferred.id !== 'deterministic';
     const chain = await this.activeChain();
-    return chain.some((provider) => provider.id !== 'deterministic');
+    return chain.some((provider) => provider && provider.id !== 'deterministic');
   }
 
   /** Human-readable description of the brain that would answer right now. */
@@ -186,6 +189,7 @@ export class ModelRouter {
     let emitted = false;
     for (const provider of chain) {
       const started = Date.now();
+      for (let attempt = 1; attempt <= 2; attempt += 1) {
       try {
         const response = await provider.generate({
           prompt: messages ? undefined : prompt,
@@ -200,15 +204,24 @@ export class ModelRouter {
         if (!response.text?.trim()) {
           errors.push(`${provider.id}: empty response`);
           this.#emitCall({ provider, kind, phase, ok: false, note: 'empty' });
-          continue;
+          break;
         }
         this.#emitCall({ provider, kind, phase, response, started, ok: true });
         const text = code ? extractCodeBlock(response.text, languages) : response.text;
         return { text, provider: provider.id, model: provider.model, meta: response };
       } catch (error) {
-        errors.push(`${provider.id}: ${error?.message ?? error}`);
-        this.#emitCall({ provider, kind, phase, ok: false, error: String(error?.message ?? error) });
-        if (emitted) throw error; // Never splice a fallback into a partial stream.
+        const msg = String(error?.message ?? error);
+        const isRate = msg.includes('429') || msg.includes('413') || msg.includes('Rate limit') || msg.includes('TPM') || msg.includes('Request too large');
+        errors.push(`${provider.id}: ${msg}`);
+        this.#emitCall({ provider, kind, phase, ok: false, error: msg });
+        if (emitted) throw error;
+        if (isRate && attempt === 1) {
+          const waitMs = (msg.match(/try again in ([\d.]+)s/)?.[1] ? parseFloat(msg.match(/try again in ([\d.]+)s/)[1]) * 1000 : 20000);
+          await new Promise(r => setTimeout(r, Math.min(waitMs + 2000, 30000)));
+          continue;
+        }
+        break;
+      }
       }
     }
     throw new ModelError(`no provider produced text for "${kind}"`, { details: { errors } });

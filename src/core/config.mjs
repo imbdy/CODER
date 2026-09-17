@@ -14,7 +14,8 @@ import { deepMerge, parseList } from './util.mjs';
 export const DEFAULT_CONFIG = {
   /** Which model brains are available, in fallback order. */
   models: {
-    order: ['ollama', 'openaiCompatible', 'deterministic'],
+    // Groq (when key present) → Ollama Qwen → deterministic; user can override via ARTISAN_PROVIDERS
+    order: process.env.ARTISAN_API_KEY ? ['openaiCompatible', 'ollama', 'deterministic'] : ['ollama', 'openaiCompatible', 'deterministic'],
     ollama: {
       host: process.env.OLLAMA_HOST || 'http://127.0.0.1:11434',
       // Qwen2.5-7B-Coder via Ollama — chosen over vLLM/llama.cpp for local 7B (see REPORT)
@@ -25,10 +26,11 @@ export const DEFAULT_CONFIG = {
       keepAlive: '30m',
     },
     openaiCompatible: {
-      baseUrl: process.env.ARTISAN_BASE_URL || '',
+      // Groq (gsk_*) is OpenAI-compatible at https://api.groq.com/openai/v1
+      baseUrl: process.env.ARTISAN_BASE_URL || (process.env.ARTISAN_API_KEY?.startsWith('gsk_') ? 'https://api.groq.com/openai/v1' : ''),
       apiKey: process.env.ARTISAN_API_KEY || '',
-      model: process.env.ARTISAN_MODEL || '',
-      temperature: 0.5,
+      model: process.env.ARTISAN_MODEL || (process.env.ARTISAN_API_KEY?.startsWith('gsk_') ? 'groq/compound' : ''),
+      temperature: 0.35,
       timeoutMs: 180000,
     },
     deterministic: {
@@ -37,12 +39,12 @@ export const DEFAULT_CONFIG = {
     },
   },
   runtime: {
-    maxPlanSteps: 8, // 7B: shorter plans, less branching
-    maxImproveIterations: 1, // 7B: one polish pass only
-    maxToolCallsPerStep: 2, // 7B: max 2 tools per turn (prefer 1) — fewer parallel calls = higher success
+    maxPlanSteps: 8, 
+    maxImproveIterations: 1, 
+    maxToolCallsPerStep: 2, 
     maxRepairAttempts: 1,
-    contextBudgetTokens: 6000, // 7B: trimmed history budget (was 24000 for frontier)
-    skillBudgetTokens: 4000, // 7B: fewer tokens, only essential skills
+    contextBudgetTokens: 6000, 
+    skillBudgetTokens: 4000, 
     /** Use the LLM tool-calling agent for builds (falls back to the deterministic engine). */
     useAgent: true,
     /** Hard cap on agent steps so a stuck local model cannot loop forever. 7B workflow is 6 steps but needs buffer. */
@@ -101,7 +103,8 @@ export const DEFAULT_CONFIG = {
 function readJsonIfExists(filePath) {
   try {
     if (!fs.existsSync(filePath)) return undefined;
-    return JSON.parse(fs.readFileSync(filePath, 'utf8'));
+    const raw = fs.readFileSync(filePath, 'utf8').replace(/^\uFEFF/, '');
+    return JSON.parse(raw);
   } catch {
     return undefined;
   }
@@ -112,7 +115,7 @@ function readJsonIfExists(filePath) {
 export function normalizeProviderId(id) {
   const key = String(id ?? '').trim().toLowerCase().replace(/[-_]/g, '');
   if (key === 'ollama' || key === 'local') return 'ollama';
-  if (key === 'openaicompatible' || key === 'openai' || key === 'api') return 'openaiCompatible';
+  if (key === 'openaicompatible' || key === 'openai' || key === 'api') return 'openai-compatible';
   if (key === 'deterministic' || key === 'offline' || key === 'heuristic') return 'deterministic';
   return String(id ?? '').trim();
 }

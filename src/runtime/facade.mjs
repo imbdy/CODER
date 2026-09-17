@@ -3,6 +3,7 @@ import { loadConfig } from '../core/config.mjs';
 import { EventBus } from '../core/events.mjs';
 import { createLogger } from '../core/logger.mjs';
 import { runTask } from './session.mjs';
+import { runBuild } from './agent-build.mjs';
 import { createRouter } from '../model/router.mjs';
 import { createSkillRegistry } from '../skills/registry.mjs';
 export function createSession({ workspaceDir = process.cwd(), config, verbose = false } = {}) {
@@ -19,6 +20,16 @@ export function createSession({ workspaceDir = process.cwd(), config, verbose = 
     router,
     skills: registry,
     async run(request, options = {}) {
+      // Prefer agent (Groq/Qwen) when live model available, fallback to deterministic
+      try {
+        if (resolved.runtime?.useAgent !== false && await router.hasLiveModel()) {
+          const built = await runBuild(String(request ?? ''), { workspaceDir, config: resolved, bus: events });
+          const summary = `${built.run.status} — ${built.run.understanding?.taskType ?? 'task'} (${(built.run.writes ?? []).map(w=>w.rel).join(', ') || 'no files'}) score ${built.run.critique?.overall ?? built.run.verification?.summary ?? ''}`;
+          return { ...built.run, html: undefined, css: undefined, summary, bus: events };
+        }
+      } catch (e) {
+        logger.debug('agent build failed, falling back to deterministic', { error: String(e?.message ?? e) });
+      }
       const outcome = await runTask(String(request ?? ''), {
         workspaceDir,
         config: resolved,

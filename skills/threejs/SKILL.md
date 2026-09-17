@@ -1,10 +1,10 @@
 ---
 name: threejs
 category: 3d
-priority: medium
+priority: high
 frameworks: [react]
 libraries: [three]
-triggers: [three.js, threejs, three js, scene, camera, mesh, geometry, material, lights, shadows, textures, 3d scene, webgl]
+triggers: [three.js, threejs, three js, scene, camera, mesh, geometry, material, lights, shadows, textures, 3d scene, webgl, "3d", depth, immersive, spatial, "3d depth"]
 description: Three.js fundamentals — scene/camera/mesh/material/lights, when to use vs CSS.
 ---
 

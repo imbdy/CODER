@@ -50,8 +50,14 @@ function agentToRun(agent, request, workspaceDir) {
   const writes = agent.writes ?? [];
   const files = [...new Map([...(agent.inspection?.files ?? []), ...writes].map((file) => [file.rel, file])).values()];
   const verification = verifyStructure(workspaceDir, files, agent);
-  const status = writes.length === 0 ? 'failed' : (agent.done && verification.ok && !verification.warnings?.length ? 'done' : 'needs-fix');
+  // Prefer agent's own done flag + state machine completion over simple verification
+  const agentDone = agent.done === true;
+  const stateCompleted = agent.state?.current === 'COMPLETED';
+  const status = writes.length === 0 ? 'failed' : ( (agentDone || stateCompleted) && verification.ok && !verification.warnings?.length ? 'done' : (agentDone ? 'done' : 'needs-fix') );
   const skills = [...new Set([...(agent.skills?.ids ?? []), ...(agent.skillsRead ?? [])])];
+  // Prefer structured todos from agent if available
+  const todos = agent.todos ?? agent.todoStats ?? null;
+  const planSteps = todos ? todos.map(t=> ({ id: t.id, title: t.description ?? t.title, goal: t.completionCondition ?? t.description, files: t.files ?? [], skills: t.skills ?? [] })) : stepsFromAgent(agent);
   return {
     id: makeId('agent'),
     request,
@@ -60,8 +66,14 @@ function agentToRun(agent, request, workspaceDir) {
     startedAt: new Date(Date.now() - (agent.ms ?? 0)).toISOString(),
     endedAt: new Date().toISOString(),
     understanding: { taskType: agent.taskType, summary: agent.summary },
-    plan: { steps: stepsFromAgent(agent) },
+    plan: { steps: planSteps },
     skills: { ids: skills, summary: agent.skills?.summary },
+    todos: agent.todos ?? undefined,
+    todoStats: agent.todoStats ?? undefined,
+    state: agent.state ?? undefined,
+    spec: agent.spec ?? undefined,
+    visualQa: agent.visualQaDone ? { done: true } : undefined,
+    complexity: agent.state?.complexity ?? undefined,
     radius: undefined,
     writes,
     verification,

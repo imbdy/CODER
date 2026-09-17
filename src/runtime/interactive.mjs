@@ -397,21 +397,31 @@ async function executeBuild(buildRequest, originalRaw, state, { bus, onProgress 
     });
     off();
     const run = outcome.run;
-    const todos = buildTodosFromPlan(run.plan, run.understanding);
-    if (run.status === 'done') {
-      for (const t of todos) t.status = 'completed';
-    } else if (run.status === 'needs-fix') {
-      for (let i = 0; i < todos.length - 1; i++) todos[i].status = 'completed';
-      if (todos.length) todos[todos.length - 1].status = 'blocked';
-    } else if (run.status === 'failed') {
-      if (todos.length) todos[0].status = 'blocked';
+    // Prefer structured todos from state-machine run; fallback to legacy plan-based todos
+    let todos;
+    if (run.todos?.length) {
+      todos = run.todos.map(t=> ({ id: t.id, title: t.description ?? t.title, description: t.description ?? t.title, goal: t.completionCondition ?? t.description, files: t.files ?? [], skills: t.skills ?? [], status: t.status ?? (run.status==='done'?'completed': run.status==='needs-fix'?'blocked':'pending'), priority: t.priority ?? 'medium' } ));
+      // If run provided todoStats, ensure statuses reflect actual run status
+      if (run.status === 'done') for (const t of todos) t.status='completed';
+      else if (run.status === 'needs-fix') { for(let i=0;i<todos.length-1;i++) if(todos[i].status!=='completed') todos[i].status='completed'; const last=todos[todos.length-1]; if(last && last.status!=='completed') last.status='blocked'; }
     } else {
-      for (const t of todos) t.status = 'completed';
+      todos = buildTodosFromPlan(run.plan, run.understanding);
+      if (run.status === 'done') {
+        for (const t of todos) t.status = 'completed';
+      } else if (run.status === 'needs-fix') {
+        for (let i = 0; i < todos.length - 1; i++) todos[i].status = 'completed';
+        if (todos.length) todos[todos.length - 1].status = 'blocked';
+      } else if (run.status === 'failed') {
+        if (todos.length) todos[0].status = 'blocked';
+      } else {
+        for (const t of todos) t.status = 'completed';
+      }
     }
     state.todoItems = todos;
     if (run.skills?.ids?.length) {
       for (const sid of run.skills.ids) if (!state.skillsUsed.includes(sid)) state.skillsUsed.push(sid);
     }
+    if (run.skillsRead?.length) for (const sid of run.skillsRead) if (!state.skillsUsed.includes(sid)) state.skillsUsed.push(sid);
     for (const t of todos) {
       if (t.status === 'completed') progress({ type: 'todo', text: `✓ ${t.title}` });
       else if (t.status === 'in_progress') progress({ type: 'todo', text: `→ ${t.title}` });
@@ -722,18 +732,24 @@ export async function executeLegacyTurn(rawRequest, state, { bus, onProgress } =
   off();
   const run = outcome.run;
 
-  // Build TODOs from plan
-  const todos = buildTodosFromPlan(run.plan, run.understanding);
-  // Simulate execution: mark all completed if run done, else mark last blocked
-  if (run.status === 'done') {
-    for (const t of todos) t.status = 'completed';
-  } else if (run.status === 'needs-fix') {
-    for (let i = 0; i < todos.length - 1; i++) todos[i].status = 'completed';
-    if (todos.length) todos[todos.length - 1].status = 'blocked';
-  } else if (run.status === 'failed') {
-    if (todos.length) todos[0].status = 'blocked';
+  // Prefer structured todos from run; fallback to legacy plan-based
+  let todos;
+  if (run.todos?.length) {
+    todos = run.todos.map(t=> ({ id: t.id, title: t.description ?? t.title, description: t.description ?? t.title, goal: t.completionCondition ?? t.description, files: t.files ?? [], skills: t.skills ?? [], status: t.status ?? (run.status==='done'?'completed': run.status==='needs-fix'?'blocked':'pending'), priority: t.priority ?? 'medium' } ));
+    if (run.status === 'done') for (const t of todos) t.status='completed';
+    else if (run.status === 'needs-fix') { for(let i=0;i<todos.length-1;i++) if(todos[i].status!=='completed') todos[i].status='completed'; const last=todos[todos.length-1]; if(last && last.status!=='completed') last.status='blocked'; }
   } else {
-    for (const t of todos) t.status = 'completed';
+    todos = buildTodosFromPlan(run.plan, run.understanding);
+    if (run.status === 'done') {
+      for (const t of todos) t.status = 'completed';
+    } else if (run.status === 'needs-fix') {
+      for (let i = 0; i < todos.length - 1; i++) todos[i].status = 'completed';
+      if (todos.length) todos[todos.length - 1].status = 'blocked';
+    } else if (run.status === 'failed') {
+      if (todos.length) todos[0].status = 'blocked';
+    } else {
+      for (const t of todos) t.status = 'completed';
+    }
   }
   state.todoItems = todos;
 
@@ -742,6 +758,7 @@ export async function executeLegacyTurn(rawRequest, state, { bus, onProgress } =
   if (run.skills?.ids?.length) {
     for (const sid of run.skills.ids) if (!state.skillsUsed.includes(sid)) state.skillsUsed.push(sid);
   }
+  if (run.skillsRead?.length) for (const sid of run.skillsRead) if (!state.skillsUsed.includes(sid)) state.skillsUsed.push(sid);
   for (const t of todos) {
     if (t.status === 'completed') progress({ type: 'todo', text: `✓ ${t.title}` });
     else if (t.status === 'in_progress') progress({ type: 'todo', text: `→ ${t.title}` });

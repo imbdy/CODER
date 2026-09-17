@@ -11,7 +11,7 @@ export function parseAndValidateToolCalls(rawText) {
   // try fenced json block first, then raw
   const parsed = extractJson(text);
   if (!parsed.ok) {
-    return { ok: false, error: `Tool JSON parse failed: ${parsed.error}. Expected: [{"tool":"read_file|write_file|edit_file|list_directory|run_bash","args":{...}}]`, strategy: parsed.strategy, raw: parsed.raw?.slice(0, 400) };
+    return { ok: false, error: `Tool JSON parse failed: ${parsed.error}. Expected: [{"tool":"read_file|write_file|edit_file|list_directory|run_bash|list_skills|read_skill","args":{...}}]`, strategy: parsed.strategy, raw: parsed.raw?.slice(0, 400) };
   }
   const value = parsed.value;
   const entries = Array.isArray(value) ? value : (value && typeof value === 'object' && (value.tool || value.done || value.name) ? [value] : []);
@@ -45,9 +45,11 @@ function normalizeArgs(tool, args) {
   }
   if (tool === 'list_directory') return { path: args.path ?? args.prefix ?? '' };
   if (tool === 'run_bash') return { command: args.command ?? args.cmd ?? '', args: args.args ?? args.arguments ?? [] };
+  if (tool === 'list_skills') return {};
+  if (tool === 'read_skill') return { id: args.id ?? args.skill ?? args.name ?? '' };
   return args;
 }
 
 export function retryMessage(error) {
-  return `TOOL CALL ERROR: ${error}\n\nFix and retry — you have ONE retry. Emit a corrected JSON array with exactly: [{"tool":"read_file|write_file|edit_file|list_directory|run_bash","args":{...}}]\nRules: write_file needs {"path","content"}; edit_file needs {"path","edits":[{"oldText","newText"}]}; read_file needs {"path"}; list_directory needs {"path":""}; run_bash needs {"command","args":[]}.\nDo NOT invent other tools. Do NOT output prose outside the JSON block on retry.`;
+  return `TOOL CALL ERROR: ${error}\n\nFix and retry — you have ONE retry. Emit a corrected JSON array with exactly: [{"tool":"read_file|write_file|edit_file|list_directory|run_bash|list_skills|read_skill","args":{...}}]\nRules: write_file needs {"path","content"}; edit_file needs {"path","edits":[{"oldText","newText"}]}; read_file needs {"path"}; list_directory needs {"path":""}; run_bash needs {"command","args":[]}; list_skills needs {}; read_skill needs {"id":"motion"}.\nDo NOT invent other tools. Do NOT output prose outside the JSON block on retry.`;
 }

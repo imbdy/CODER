@@ -8,6 +8,12 @@
  */
 
 import { estimateTokens, unique } from '../core/util.mjs';
+import { PHASE_SKILLS } from './phases.mjs';
+
+export { PHASE_SKILLS } from './phases.mjs';
+export function phaseSkillIds(phase) {
+  return new Set(PHASE_SKILLS[phase] ?? []);
+}
 
 /** Skills that only make sense next to another skill. */
 export const DEPENDENCIES = {
@@ -239,6 +245,33 @@ export class SkillRetriever {
       maxSkills: base.maxSkills ?? 4,
       budgetTokens: base.budgetTokens ?? 5000,
     });
+  }
+
+  /**
+   * Phase-gated retrieval — the intelligent skill system.
+   * Each phase loads ONLY what it needs (structure → creative → motion → polish),
+   * so a 7B brain never drowns in 40 skills at once.
+   * @param {{phases?: string[], request?: string, taskType?: string, workspace?: object, maxSkills?: number, budgetTokens?: number}} input
+   */
+  retrieveForPhases({ phases = ['structure'], request = '', taskType = 'create-page', workspace = {}, maxSkills = 4, budgetTokens = 5000 } = {}) {
+    const out = { phases: {}, ids: [], contextBlocks: {} };
+    const seen = new Set();
+    for (const phase of phases) {
+      const allowed = phaseSkillIds(phase);
+      const got = this.retrieve({ request: `${request} phase:${phase}`, taskType, workspace, maxSkills, budgetTokens });
+      // Keep only skills relevant to this phase (+ always-include policy skills).
+      const always = new Set(this.config?.skills?.alwaysInclude ?? []);
+      const ids = got.ids.filter((id) => always.has(id) || allowed.has(id) || allowed.has('*'));
+      const fallback = got.ids.filter((id) => !seen.has(id)).slice(0, 1);
+      const picked = ids.length ? ids : fallback;
+      const docs = this.registry.documents(picked.filter((id) => !seen.has(id))).join('\n\n---\n\n');
+      out.phases[phase] = { ids: picked, summary: picked.join(', '), contextBlock: docs };
+      for (const id of picked) if (!seen.has(id)) { seen.add(id); out.ids.push(id); }
+      out.contextBlocks[phase] = docs;
+    }
+    out.summary = out.ids.join(', ');
+    out.contextBlock = phases.map((p) => `### Phase: ${p}\n${out.contextBlocks[p] || '(no additional guidance)'}`).join('\n\n---\n\n');
+    return out;
   }
 }
 

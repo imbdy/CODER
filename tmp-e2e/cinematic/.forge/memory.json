@@ -1,0 +1,75 @@
+{
+  "version": 1,
+  "createdAt": "2026-09-17T11:22:13.377Z",
+  "updatedAt": "2026-09-17T11:22:13.377Z",
+  "runs": [
+    {
+      "id": "run_47b4042d",
+      "request": "Build me a landing page for an AI developer tool. I want it to feel cinematic, premium and futuristic. Use 3D if it helps.",
+      "taskType": "create-page",
+      "at": "2026-09-17T11:22:13.377Z",
+      "status": "done",
+      "score": 90,
+      "skills": [
+        "anti-slop",
+        "frontend-master",
+        "project-architecture",
+        "visual-design",
+        "gsap",
+        "animation-principles"
+      ],
+      "files": [
+        "index.html",
+        "styles/main.css",
+        "scripts/main.js"
+      ],
+      "direction": "Aurora Depth"
+    }
+  ],
+  "designLanguage": {
+    "direction": "Aurora Depth",
+    "tokens": {
+      "accent": "#7c5cff",
+      "theme": "dark",
+      "direction": "aurora-depth"
+    },
+    "updatedAt": "2026-09-17T11:22:13.377Z"
+  },
+  "decisions": [
+    {
+      "kind": "direction",
+      "choice": "aurora-depth",
+      "why": "heuristic",
+      "runId": "run_47b4042d"
+    },
+    {
+      "kind": "tech",
+      "choice": "threejs",
+      "why": "hero focal object earns one bounded scene",
+      "runId": "run_47b4042d"
+    },
+    {
+      "kind": "motion",
+      "choice": "scroll-story+micro",
+      "why": "entrance → interaction → exit; one easing family",
+      "runId": "run_47b4042d"
+    }
+  ],
+  "registry": {
+    "created": [
+      "index.html",
+      "styles/main.css",
+      "scripts/main.js"
+    ],
+    "modified": []
+  },
+  "history": [
+    {
+      "id": "run_47b4042d",
+      "request": "Build me a landing page for an AI developer tool. I want it to feel cinematic, premium and futuristic. Use 3D if it helps.",
+      "at": "2026-09-17T11:22:13.377Z",
+      "status": "done",
+      "score": 90
+    }
+  ]
+}

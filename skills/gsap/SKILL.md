@@ -4,7 +4,7 @@ category: animation
 priority: high
 frameworks: [react]
 libraries: [gsap]
-triggers: [gsap, timeline, ScrollTrigger, scrub, pin, choreography, cinematic, sequence, svg animation, stagger, easing]
+triggers: [gsap, timeline, ScrollTrigger, scrub, pin, choreography, cinematic, sequence, svg animation, stagger, easing, "smooth motion", "scroll storytelling", depth, immersive, parallax, "3d"]
 description: GSAP for timelines, scrub, pinning, complex scroll choreography — prefer timelines over scattered delays.
 ---
 

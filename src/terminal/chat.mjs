@@ -5,31 +5,65 @@ import { createInteractiveState, executeTurn, handleCommand, statusText, todoTex
 import { loadConfig } from '../core/config.mjs';
 import { createSession } from '../runtime/facade.mjs';
 
-// concise professional progress — matches spec output style
+// concise professional progress — hidden by default, thinking animation only
 const C = { reset: '\x1b[0m', dim: '\x1b[2m', cyan: '\x1b[36m', green: '\x1b[32m', yellow: '\x1b[33m', red: '\x1b[31m', magenta: '\x1b[35m', bold: '\x1b[1m' };
 function paint(code, text, useColor) { return useColor ? `${code}${text}${C.reset}` : text; }
 
-function progressPrinter({ color }) {
-  return (ev) => {
-    switch (ev.type) {
-      case 'understand': console.log(paint(C.dim, `[understand] ${ev.text}`, color)); break;
-      case 'inspect': console.log(paint(C.dim, `[inspect] ${ev.text}`, color)); break;
-      case 'skill': console.log(paint(C.cyan, `[skill] ${ev.text}`, color)); break;
-      case 'tool': console.log(paint(C.dim, `[tool] ${ev.text}`, color)); break;
-      case 'brain': console.log(paint(C.magenta, `[brain] ${ev.text}`, color)); break;
-      case 'todo': {
-        const t = String(ev.text);
-        if (t.startsWith('✓')) console.log(paint(C.green, `[todo] ${t}`, color));
-        else if (t.startsWith('→')) console.log(paint(C.yellow, `[todo] ${t}`, color));
-        else console.log(paint(C.dim, `[todo] ${t}`, color));
-        break;
+// thinking animation — replaces verbose [brain]/[inspect]/TODO logs
+function createThinker({ color }) {
+  const frames = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+  let i = 0;
+  let timer = null;
+  let active = false;
+  return {
+    start() {
+      if (active) return;
+      active = true;
+      if (!process.stdout.isTTY) {
+        process.stdout.write(paint(C.dim, 'Thinking...\n', color));
+        return;
       }
-      case 'edit': console.log(paint(C.green, `[edit] ${ev.text}`, color)); break;
-      case 'verify': console.log(paint(ev.text?.includes('PASS') || ev.text?.includes('0 issue') ? C.green : C.yellow, `[verify] ${ev.text}`, color)); break;
-      case 'done': console.log(paint(ev.text === 'done' ? C.green : C.yellow, `[done] ${ev.text}`, color)); break;
-      default: break;
+      timer = setInterval(() => {
+        const frame = frames[i = (i + 1) % frames.length];
+        process.stdout.write(`\r${paint(C.dim, `${frame} Thinking...`, color)}`);
+      }, 80);
+    },
+    stop() {
+      if (!active) return;
+      active = false;
+      if (timer) clearInterval(timer);
+      timer = null;
+      if (process.stdout.isTTY) process.stdout.write('\r\x1b[K');
+    },
+  };
+}
+
+// silent progress — we hide internal steps, only thinking animation is visible
+function progressPrinter({ color, thinker }) {
+  return (ev) => {
+    // intentionally silent — user asked not to see internal logs
+    // we only keep thinker alive; no console.log for understand/inspect/skill/tool/todo/edit/verify
+    // errors still surface via final result, not live logs
+    if (ev.type === 'error') {
+      // don't spam, but keep for debug if verbose
     }
   };
+}
+
+function extractWorkspacePath(text) {
+  const t = String(text ?? '');
+  // match Windows absolute path like C:\Projects or C:/Projects or D:\foo\bar, also quoted
+  const win = t.match(/([A-Za-z]:\\[^\s"'`]+)/);
+  if (win) return win[1].replace(/[,.;]+$/, '');
+  const win2 = t.match(/([A-Za-z]:\/[^\s"'`]+)/);
+  if (win2) return win2[1].replace(/[,.;]+$/, '');
+  // quoted path "C:\Projects"
+  const quoted = t.match(/["']([A-Za-z]:\\[^"']+)["']/);
+  if (quoted) return quoted[1];
+  // in folder X / put work in this folder X
+  const m = t.match(/(?:in folder|in this folder|to folder|path|workspace)\s+([A-Za-z]:\\[^\s]+)/i);
+  if (m) return m[1].replace(/[,.;]+$/, '');
+  return null;
 }
 
 export async function runChat({ workspaceDir, config, flags = {} } = {}) {
@@ -43,7 +77,8 @@ export async function runChat({ workspaceDir, config, flags = {} } = {}) {
   createSession({ workspaceDir: dir, config: cfg });
 
   const state = createInteractiveState({ workspaceDir: dir, config: cfg });
-  const onProgress = progressPrinter({ color });
+  const thinker = createThinker({ color });
+  const onProgress = progressPrinter({ color, thinker });
 
   console.log(paint(C.bold, '\n  artisan — interactive session', color));
   console.log(paint(C.dim, `  workspace: ${dir}  (type /help for commands, /exit to quit)\n`, color));
@@ -106,8 +141,47 @@ export async function runChat({ workspaceDir, config, flags = {} } = {}) {
     }
 
     running = true;
+    // maybe user specified a new workspace path like C:\Projects — handle it before turn (and remember for next "go ahead")
+    {
+      const fs = await import('node:fs');
+      let target = extractWorkspacePath(raw);
+      if (target) {
+        // remember for follow-up "yea go ahead" without path
+        state.pendingWorkspacePath = target;
+      } else if (state.pendingWorkspacePath) {
+        // reuse last requested path if current message is a build trigger but has no path
+        const isGo = /^(yea|yes|go ahead|start|build it|ok|okay|proceed)/i.test(raw.trim());
+        if (isGo) target = state.pendingWorkspacePath;
+      }
+      if (target) {
+        try {
+          const resolved = path.resolve(target);
+          fs.mkdirSync(resolved, { recursive: true });
+          if (resolved !== state.workspaceDir) {
+            state.workspaceDir = resolved;
+            state.workspacePath = resolved;
+            try { state.config = loadConfig({ workspaceDir: resolved, brain: flags.brain ?? 'auto' }); } catch {}
+            if (raw.toLowerCase().includes(target.toLowerCase())) {
+              console.log(paint(C.dim, `  → workspace switched to ${resolved}`, color));
+            }
+          }
+          // if we used pending path, clear it after successful switch for next build
+          if (target === state.pendingWorkspacePath && !raw.includes(target)) {
+            // keep it — user may want next build also there, so don't clear yet
+          }
+        } catch (e) {
+          console.log(paint(C.yellow, `  ! could not switch to ${target}: ${String(e?.message ?? e).slice(0,120)}`, color));
+        }
+      }
+    }
+    thinker.start();
+    let streamed = false;
+    const onToken = (text) => {
+      if (!streamed) { thinker.stop(); streamed = true; }
+      process.stdout.write(text);
+    };
     try {
-      const result = await executeTurn(raw, state, { onProgress, onToken: (text) => process.stdout.write(text) });
+      const result = await executeTurn(raw, state, { onProgress, onToken });
 
       if (result.kind === 'answer') {
         if (result.streamed) console.log();
@@ -115,19 +189,16 @@ export async function runChat({ workspaceDir, config, flags = {} } = {}) {
       } else if (result.kind === 'discuss') {
         console.log(result.text);
       } else if (result.kind === 'task') {
-        // concise completion + TODO snapshot
-        const todos = state.todoItems;
-        if (todos.length) {
-          console.log(paint(C.dim, `\nTODO:`, color));
-          for (const t of todos) {
-            const box = t.status === 'completed' ? '[x]' : t.status === 'blocked' ? '[!]' : '[ ]';
-            const line = `${box} ${t.title}`;
-            console.log(paint(t.status === 'completed' ? C.green : C.dim, line, color));
-          }
-        }
+        // hidden — user asked not to see internal TODO/files, just a clean done + path
         const writes = result.run?.writes ?? [];
-        if (writes.length) console.log(paint(C.dim, `files: ${writes.map((w) => w.rel).join(', ')}`, color));
-        // keep output concise — no raw tool payloads, no giant model dump
+        const where = state.workspaceDir;
+        if (result.run?.status === 'done') {
+          console.log(paint(C.green, `\n✓ Built ${writes.length} files in ${where}`, color));
+          if (writes.length) console.log(paint(C.dim, `  ${writes.map((w) => w.rel).join(', ')}`, color));
+        } else {
+          console.log(paint(C.yellow, `\n→ ${result.run?.status ?? 'done'} — ${writes.length} files in ${where}`, color));
+          if (writes.length) console.log(paint(C.dim, `  ${writes.map((w) => w.rel).join(', ')}`, color));
+        }
       } else if (result.kind === 'stop') {
         console.log(paint(C.yellow, result.text, color));
       } else if (result.kind === 'exit') {
@@ -143,6 +214,7 @@ export async function runChat({ workspaceDir, config, flags = {} } = {}) {
     } catch (e) {
       console.log(paint(C.red, `error: ${String(e?.message ?? e)}`, color));
     } finally {
+      thinker.stop();
       running = false;
       if (!rl.closed) rl.prompt();
     }

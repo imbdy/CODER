@@ -91,7 +91,23 @@ export class OpenAICompatibleProvider extends ModelProvider {
     }
 
     const data = await response.json();
-    const text = data?.choices?.[0]?.message?.content ?? '';
+    // Groq compound puts reasoning in `message.reasoning` and sometimes content is a guide, not JSON
+    const msg = data?.choices?.[0]?.message ?? {};
+    let text = msg?.content ?? '';
+    // If json mode was requested but content is not JSON, try reasoning (Groq compound) or combined
+    if (json) {
+      const reasoning = msg?.reasoning ?? '';
+      const combined = `${reasoning}\n${text}`;
+      // Prefer content if it already looks like JSON, otherwise try reasoning
+      const hasJson = text.trim().startsWith('{') || text.trim().startsWith('[');
+      if (!hasJson && reasoning) {
+        // Check if reasoning contains JSON
+        const jsonInReasoning = reasoning.match(/\{[\s\S]*"taskType"[\s\S]*\}/);
+        if (jsonInReasoning) text = jsonInReasoning[0];
+        else if (reasoning.trim().startsWith('{')) text = reasoning;
+        else text = combined;
+      }
+    }
     const promptTokens = data?.usage?.prompt_tokens ?? 0;
     const completionTokens = data?.usage?.completion_tokens ?? 0;
     this.recordSuccess({ promptTokens, completionTokens, ms: Date.now() - started });

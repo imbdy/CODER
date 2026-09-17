@@ -79,6 +79,8 @@ export const TOOL_DEFS = [
   { name: 'patchFile', desc: 'Search/replace patch with fuzzy fallback' },
   { name: 'listFiles', desc: 'List workspace files' },
   { name: 'exec', desc: 'Run an allow-listed shell command' },
-  { name: 'listSkills', desc: 'List available design skills' },
-  { name: 'readSkill', desc: 'Read one skill (expert guidance) by id' },
+  { name: 'listSkills', desc: 'List available design skills (discover: id + category + description)' },
+  { name: 'readSkill', desc: 'Read one skill (expert guidance) by id — full body injected into context' },
+  { name: 'list_skills', desc: 'Alias for listSkills' },
+  { name: 'read_skill', desc: 'Alias for readSkill' },
 ];
